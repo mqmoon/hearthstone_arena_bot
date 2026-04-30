@@ -209,6 +209,18 @@ async def _get_cached_season_all(mode: str, season_id: str) -> list[dict]:
     return all_players
 
 
+def _rank_prefix(position: int) -> str:
+    if position <= 10:
+        return "[前10] "
+    if position <= 25:
+        return "[前25] "
+    if position <= 50:
+        return "[前50] "
+    if position <= 100:
+        return "[前100]"
+    return " " * 7
+
+
 async def query_career(matcher, player_id: str):
     # 并发获取所有赛季数据：旧版 49-56 + 新版 1-6
     old_tasks = [_get_cached_season_all("arena", sid) for sid in ALL_OLD_SEASONS]
@@ -254,7 +266,8 @@ async def query_career(matcher, player_id: str):
 
     lines = [f"玩家【{player_id}】的竞技场生涯记录"]
     for r in records:
-        lines.append(f"{r['mode']} S{r['season']} - 第{r['position']}名 - {r['score']}")
+        prefix = _rank_prefix(r["position"])
+        lines.append(f"{prefix}{r['mode']} S{r['season']} - 第{r['position']}名 - {r['score']}分")
 
     reply_text = "\n".join(lines)
     await matcher.finish(reply_text)

@@ -218,7 +218,7 @@ def _rank_prefix(position: int) -> str:
         return "[前50] "
     if position <= 100:
         return "[前100]"
-    return " " * 7
+    return " " * 11
 
 
 async def query_career(matcher, player_id: str):
@@ -236,7 +236,7 @@ async def query_career(matcher, player_id: str):
             tag = player.get("battle_tag", "")
             if tag.split("#")[0].lower() == player_id.lower():
                 records.append({
-                    "mode": "旧版竞技场",
+                    "mode": "旧版",
                     "season": season_id,
                     "position": player.get("position", 0),
                     "score": player.get("score", 0),
@@ -247,7 +247,7 @@ async def query_career(matcher, player_id: str):
             tag = player.get("battle_tag", "")
             if tag.split("#")[0].lower() == player_id.lower():
                 records.append({
-                    "mode": "地下竞技场",
+                    "mode": "地下",
                     "season": season_id,
                     "position": player.get("position", 0),
                     "score": player.get("score", 0),
@@ -258,7 +258,7 @@ async def query_career(matcher, player_id: str):
 
     # 按时间排序（从旧到新）：旧版 49-56 -> 新版 1-6
     def sort_key(r: dict) -> tuple:
-        if r["mode"] == "旧版竞技场":
+        if r["mode"] == "旧版":
             return (0, int(r["season"]))
         return (1, int(r["season"]))
 
@@ -267,7 +267,7 @@ async def query_career(matcher, player_id: str):
     lines = [f"玩家【{player_id}】的竞技场生涯记录"]
     for r in records:
         prefix = _rank_prefix(r["position"])
-        lines.append(f"{prefix}{r['mode']} S{r['season']} - 第{r['position']}名 - {r['score']}分")
+        lines.append(f"{prefix}{r['mode']} S{r['season']} - 第{r['position']}名 - {r['score']}")
 
     reply_text = "\n".join(lines)
     await matcher.finish(reply_text)

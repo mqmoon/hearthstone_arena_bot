@@ -1,6 +1,8 @@
 import httpx
 import json
+import time
 import asyncio
+import threading
 from pathlib import Path
 from nonebot import on_command
 from nonebot.adapters.onebot.v11 import Message, MessageEvent
@@ -10,6 +12,13 @@ from nonebot.exception import FinishedException
 
 DATA_DIR = Path(__file__).parent.parent.parent / "data" / "arena_bot_cn"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+CACHE_TTL = 3600  # 1-hour disk cache TTL for the latest underground arena season
+MAX_CONCURRENT = 3  # max parallel API requests
+MAX_PLAYER_PAGES = 20  # pages to search when looking up a player
+
+_mem_cache: dict[tuple, tuple[float, list]] = {}  # (mode, season_id, page) -> (timestamp, players)
+_mem_cache_lock = threading.Lock()
 
 arena_cmd = on_command("查竞技场", aliases={"查询竞技场", "rank", "new"}, priority=10, block=True)
 old_arena_cmd = on_command("查旧竞技场", aliases={"查询旧竞技场", "legacy", "old"}, priority=10, block=True)
@@ -22,18 +31,26 @@ TUTORIAL_TEXT = """【竞技场查询 Bot 使用指引】
   查竞技场            → 最新赛季前10名
   查竞技场 6          → 第6赛季前10名
   查竞技场 5 50       → 第5赛季前50名
+  查竞技场 100        → 最新赛季前100名
+  查竞技场 最新 100   → 最新赛季前100名
+  查竞技场 玩家名     → 最新赛季查询该玩家排名
+  查竞技场 6 玩家名   → 第6赛季查询该玩家排名
   赛季：1~6，别名：最新、上赛季
 
 旧版竞技场（查旧竞技场 / legacy / old）
   查旧竞技场          → 第56赛季前10名
   查旧竞技场 56       → 第56赛季前10名
   查旧竞技场 49 100   → 第49赛季前100名
+  查旧竞技场 100      → 第56赛季前100名
+  查旧竞技场 玩家名   → 第56赛季查询该玩家排名
+  查旧竞技场 56 玩家名 → 第56赛季查询该玩家排名
   赛季：49~56，别名：最新、上赛季、默认
 
 玩家生涯（生涯 / career）
   生涯 玩家名         → 该玩家所有赛季的榜单记录
 
-提示：最后一个数字为排名上限，Bot 自动分页获取。旧版及非最新新版赛季数据会被缓存。"""
+提示：查询榜单时最后一个数字为排名上限，Bot 自动分页获取。
+除地下竞技场最新赛季缓存 1 小时外，其余数据均永久缓存。"""
 
 ALL_NEW_SEASONS = ["1", "2", "3", "4", "5", "6"]
 ALL_OLD_SEASONS = [str(i) for i in range(49, 57)]  # 49-56
@@ -57,12 +74,28 @@ def _cache_path(mode: str, season_id: str, page: int) -> Path:
     return d / f"page_{page}.json"
 
 
-def _load_cache(path: Path) -> list | None:
+def _load_cache(path: Path, ttl: int | None = None) -> list | None:
+    cache_key = _path_to_cache_key(path)
+
+    with _mem_cache_lock:
+        if cache_key and cache_key in _mem_cache:
+            ts, data = _mem_cache[cache_key]
+            if ttl is None or time.time() - ts < ttl:
+                return data
+            del _mem_cache[cache_key]
+
     if not path.exists():
         return None
     try:
+        mtime = path.stat().st_mtime
+        if ttl is not None and time.time() - mtime > ttl:
+            return None
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        if cache_key:
+            with _mem_cache_lock:
+                _mem_cache[cache_key] = (time.time(), data)
+        return data
     except Exception:
         return None
 
@@ -71,12 +104,61 @@ def _save_cache(path: Path, players: list):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(players, f, ensure_ascii=False, indent=2)
+    cache_key = _path_to_cache_key(path)
+    if cache_key:
+        with _mem_cache_lock:
+            _mem_cache[cache_key] = (time.time(), players)
+
+
+def _path_to_cache_key(path: Path) -> tuple | None:
+    try:
+        season_dir = path.parent.name  # "season_6"
+        mode = path.parent.parent.name  # "undergroundarena"
+        page = int(path.stem.split("_")[1])  # "page_1" -> 1
+        season_id = season_dir.split("_", 1)[1]
+        return (mode, season_id, page)
+    except (IndexError, ValueError):
+        return None
+
+
+def _find_player_in_page(players: list, player_name: str) -> dict | None:
+    for p in players:
+        tag = p.get("battle_tag", "")
+        if tag.split("#")[0].lower() == player_name.lower():
+            return p
+    return None
+
+
+def _resolve_cache_ttl(mode: str, season_id: str) -> int | None:
+    if mode == "undergroundarena" and season_id == SEASON_ALIASES["默认"]:
+        return CACHE_TTL
+    return None
+
+
+async def _search_player_in_season(mode: str, season_id: str, player_name: str) -> dict | None:
+    """Fetch pages one at a time, searching for a player. Stops on first match."""
+    ttl = _resolve_cache_ttl(mode, season_id)
+    async with httpx.AsyncClient() as client:
+        for page in range(1, MAX_PLAYER_PAGES + 1):
+            cache_path = _cache_path(mode, season_id, page)
+            players = _load_cache(cache_path, ttl=ttl)
+
+            if players is None:
+                players = await _fetch_page_from_api(client, mode, season_id, page)
+                if players:
+                    await asyncio.to_thread(_save_cache, cache_path, players)
+                else:
+                    return None
+
+            match = _find_player_in_page(players, player_name)
+            if match:
+                return match
+
+    return None
 
 
 def _should_cache(mode: str, season_id: str) -> bool:
-    if mode == "arena":
-        return True
-    return season_id != SEASON_ALIASES["默认"]
+    return True
 
 
 def parse_args(user_input: str, is_old: bool = False):
@@ -84,29 +166,43 @@ def parse_args(user_input: str, is_old: bool = False):
     default_season = "56" if is_old else "6"
     default_name = "56" if is_old else "最新赛季"
     default_limit = 10
+    player_name = None
 
     if not parts:
-        return default_season, default_limit, default_name
+        return default_season, default_limit, default_name, player_name
 
-    # 单数字特判：优先视为赛季ID
+    # 单数字：视为赛季ID；不在合法赛季范围则视为排名上限
     if len(parts) == 1 and parts[0].isdigit():
         num = int(parts[0])
         if is_old and 49 <= num <= 56:
-            return str(num), default_limit, str(num)
+            return str(num), default_limit, str(num), player_name
         if not is_old and 1 <= num <= 6:
-            return str(num), default_limit, str(num)
+            return str(num), default_limit, str(num), player_name
+        # 数字不在赛季范围 -> 视为排名上限（如 rank 100 = 最新赛季前100名）
+        return default_season, max(1, num), default_name, player_name
+
+    # 单参数非数字：赛季别名 -> 赛季，否则视为玩家名
+    if len(parts) == 1:
+        aliases = OLD_SEASON_ALIASES if is_old else SEASON_ALIASES
+        if parts[0] in aliases:
+            sid = aliases[parts[0]]
+            return sid, default_limit, parts[0], player_name
+        # 不是合法赛季参数，视为玩家名
+        return default_season, default_limit, default_name, parts[0]
 
     limit = default_limit
+    # 最后一个参数为数字 -> 排名上限；否则视为玩家名
     if parts[-1].isdigit():
         limit = max(1, int(parts[-1]))
         season_parts = parts[:-1]
     else:
-        season_parts = parts
+        player_name = parts[-1]
+        season_parts = parts[:-1]
 
     season_key = " ".join(season_parts).strip().upper()
 
     if not season_key:
-        return default_season, limit, default_name
+        return default_season, limit, default_name, player_name
 
     if is_old:
         season_id = OLD_SEASON_ALIASES.get(season_key)
@@ -125,7 +221,7 @@ def parse_args(user_input: str, is_old: bool = False):
             else:
                 season_id = None
 
-    return season_id, limit, season_name
+    return season_id, limit, season_name, player_name
 
 
 async def _fetch_page_from_api(client: httpx.AsyncClient, mode: str, season_id: str, page: int) -> list:
@@ -139,50 +235,42 @@ async def _fetch_page_from_api(client: httpx.AsyncClient, mode: str, season_id: 
     }
     response = await client.get(api_url, headers=headers, timeout=10.0)
     data = response.json()
-    return data.get("data", {}).get("list", [])
+    players_data = data.get("data") or {}
+    return players_data.get("list", [])
 
 
-async def _fetch_all_pages(mode: str, season_id: str, pages_needed: int, use_cache: bool) -> list:
+async def _fetch_all_pages(mode: str, season_id: str, pages_needed: int, use_cache: bool, ttl: int | None = None) -> list:
     all_players: list[dict] = []
-
-    # 1. 区分已缓存和未缓存的页
-    cached_pages: list[int] = []
     uncached_pages: list[int] = []
 
-    if use_cache:
-        for page in range(1, pages_needed + 1):
-            if _cache_path(mode, season_id, page).exists():
-                cached_pages.append(page)
-            else:
-                uncached_pages.append(page)
-    else:
-        uncached_pages = list(range(1, pages_needed + 1))
+    for page in range(1, pages_needed + 1):
+        if use_cache:
+            players = _load_cache(_cache_path(mode, season_id, page), ttl)
+        else:
+            players = None
 
-    # 2. 并发读取所有已缓存的页（核心优化：串行 -> 并发）
-    if cached_pages:
-        tasks = [
-            (page, asyncio.to_thread(_load_cache, _cache_path(mode, season_id, page)))
-            for page in cached_pages
-        ]
-        results = await asyncio.gather(*[t[1] for t in tasks])
-        # 按页码排序后合并，保证顺序正确
-        for page, players in sorted(zip([t[0] for t in tasks], results), key=lambda x: x[0]):
+        if players is not None:
+            all_players.extend(players)
+        else:
+            uncached_pages.append(page)
+
+    if uncached_pages:
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+
+        async def _fetch_one(page: int):
+            async with semaphore:
+                async with httpx.AsyncClient() as client:
+                    players = await _fetch_page_from_api(client, mode, season_id, page)
+                if players and use_cache:
+                    await asyncio.to_thread(
+                        _save_cache, _cache_path(mode, season_id, page), players
+                    )
+                return players
+
+        results = await asyncio.gather(*[_fetch_one(p) for p in uncached_pages])
+        for players in results:
             if players:
                 all_players.extend(players)
-
-    # 3. 串行请求未缓存的页（避免触发 API 限流）
-    if uncached_pages:
-        async with httpx.AsyncClient() as client:
-            for page in uncached_pages:
-                players = await _fetch_page_from_api(client, mode, season_id, page)
-                if players:
-                    if use_cache:
-                        await asyncio.to_thread(
-                            _save_cache, _cache_path(mode, season_id, page), players
-                        )
-                    all_players.extend(players)
-                if not players:
-                    break
 
     return all_players
 
@@ -199,7 +287,7 @@ async def _get_cached_season_all(mode: str, season_id: str) -> list[dict]:
     if not page_files:
         return []
 
-    tasks = [asyncio.to_thread(_load_cache, f) for f in page_files]
+    tasks = [asyncio.to_thread(_load_cache, f, None) for f in page_files]
     results = await asyncio.gather(*tasks)
 
     all_players: list[dict] = []
@@ -217,7 +305,7 @@ def _rank_prefix(position: int) -> str:
     if position <= 50:
         return "[前50] "
     if position <= 100:
-        return "[前100]"
+        return "[前100] "
     return " " * 11
 
 
@@ -273,30 +361,46 @@ async def query_career(matcher, player_id: str):
     await matcher.finish(reply_text)
 
 
-async def query_arena(matcher, mode: str, season_id: str, limit: int, season_name: str):
+async def query_arena(matcher, mode: str, season_id: str, limit: int, season_name: str, player_name: str = None):
     use_cache = _should_cache(mode, season_id)
-    pages_needed = (limit + 24) // 25
+    cache_ttl = _resolve_cache_ttl(mode, season_id)
+    mode_display = "地下竞技场" if mode == "undergroundarena" else "旧版竞技场"
 
     try:
-        all_players = await _fetch_all_pages(mode, season_id, pages_needed, use_cache)
+        if player_name:
+            player = await _search_player_in_season(mode, season_id, player_name)
+            if not player:
+                await matcher.finish(
+                    f"在国服{mode_display}第{season_name}赛季中未找到玩家【{player_name}】。"
+                )
 
-        if not all_players:
-            await matcher.finish(f"未查询到【{season_name}】的榜单数据。")
-
-        display = all_players[:limit]
-
-        mode_name = "地下竞技场" if mode == "undergroundarena" else "旧版竞技场"
-
-        # 列表 join 替代 +=，避免循环中大量临时字符串
-        lines = [f"国服{mode_name}第{season_name}赛季榜单 (1-{len(display)}名)"]
-        for player in display:
             rank = player.get("position", 0)
-            name = player.get("battle_tag", "隐藏玩家").split("#")[0]
             score = player.get("score", 0)
-            lines.append(f"{rank} - {name} - {score}")
+            tag = player.get("battle_tag", "")
+            display_name = tag.split("#")[0]
+            reply = (
+                f"国服{mode_display}第{season_name}赛季榜单 - 玩家【{display_name}】\n"
+                f"第{rank}名 - {display_name} - {score}"
+            )
+            await matcher.finish(reply)
+        else:
+            pages_needed = (limit + 24) // 25
+            all_players = await _fetch_all_pages(mode, season_id, pages_needed, use_cache, cache_ttl)
 
-        reply_text = "\n".join(lines)
-        await matcher.finish(reply_text)
+            if not all_players:
+                await matcher.finish(f"未查询到【{season_name}】的榜单数据。")
+
+            display = all_players[:limit]
+
+            lines = [f"国服{mode_display}第{season_name}赛季榜单 (1-{len(display)}名)"]
+            for player in display:
+                rank = player.get("position", 0)
+                name = player.get("battle_tag", "隐藏玩家").split("#")[0]
+                score = player.get("score", 0)
+                lines.append(f"{rank} - {name} - {score}")
+
+            reply_text = "\n".join(lines)
+            await matcher.finish(reply_text)
 
     except FinishedException:
         raise
@@ -310,23 +414,23 @@ async def query_arena(matcher, mode: str, season_id: str, limit: int, season_nam
 @arena_cmd.handle()
 async def handle_arena_rank(event: MessageEvent, args: Message = CommandArg()):
     user_input = args.extract_plain_text().strip()
-    season_id, limit, season_name = parse_args(user_input, is_old=False)
+    season_id, limit, season_name, player_name = parse_args(user_input, is_old=False)
 
     if not season_id:
         await arena_cmd.finish("未找到对应的赛季参数，请尝试输入如：查竞技场 最新")
 
-    await query_arena(arena_cmd, "undergroundarena", season_id, limit, season_name)
+    await query_arena(arena_cmd, "undergroundarena", season_id, limit, season_name, player_name)
 
 
 @old_arena_cmd.handle()
 async def handle_old_arena_rank(event: MessageEvent, args: Message = CommandArg()):
     user_input = args.extract_plain_text().strip()
-    season_id, limit, season_name = parse_args(user_input, is_old=True)
+    season_id, limit, season_name, player_name = parse_args(user_input, is_old=True)
 
     if not season_id:
         await old_arena_cmd.finish("未找到对应的赛季参数，旧版竞技场赛季范围为 49~56")
 
-    await query_arena(old_arena_cmd, "arena", season_id, limit, season_name)
+    await query_arena(old_arena_cmd, "arena", season_id, limit, season_name, player_name)
 
 
 @career_cmd.handle()

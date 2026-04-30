@@ -10,6 +10,8 @@ from nonebot.params import CommandArg
 from nonebot.log import logger
 from nonebot.exception import FinishedException
 
+from arena_bot_cn.plugins.bind_account import _get_bindings_for_qq
+
 DATA_DIR = Path(__file__).parent.parent.parent / "data" / "arena_bot_cn"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -48,6 +50,21 @@ TUTORIAL_TEXT = """【竞技场查询 Bot 使用指引】
 
 玩家生涯（生涯 / career）
   生涯 玩家名         → 该玩家所有赛季的榜单记录
+
+账号绑定（账号绑定 / 绑定账号 / bind）
+  账号绑定              → 列出你已绑定的游戏账号
+  账号绑定 游戏ID       → 绑定游戏账号到你的QQ
+  账号绑定 删除 游戏ID  → 解除该游戏账号的绑定
+  账号绑定 列表         → 同空参数，列出已绑定账号
+  注意：同一游戏ID只能被一个QQ绑定，不同QQ不可重复绑定。
+
+战绩记录（战绩上传 / 我的战绩 / 删除战绩）
+  战绩上传 游戏ID 胜场数... → 上传胜场数据（最多30轮，每轮0~12胜）
+  我的战绩                  → 查看第一个绑定账号的战绩
+  我的战绩 游戏ID           → 查看指定绑定账号的战绩
+  删除战绩 游戏ID 轮次...   → 删除指定轮次（最多30个索引）
+  删除战绩 轮次...          → 对第一个绑定账号删除指定轮次
+  分数规则：第1轮分数=胜场×100，后续每轮=前轮分数×0.9+胜场×100
 
 提示：查询榜单时最后一个数字为排名上限，Bot 自动分页获取。
 除地下竞技场最新赛季缓存 1 小时外，其余数据均永久缓存。"""
@@ -414,6 +431,12 @@ async def query_arena(matcher, mode: str, season_id: str, limit: int, season_nam
 @arena_cmd.handle()
 async def handle_arena_rank(event: MessageEvent, args: Message = CommandArg()):
     user_input = args.extract_plain_text().strip()
+
+    if not user_input:
+        bindings = _get_bindings_for_qq(event.get_user_id())
+        if bindings:
+            user_input = bindings[0]["name"]
+
     season_id, limit, season_name, player_name = parse_args(user_input, is_old=False)
 
     if not season_id:
@@ -436,6 +459,12 @@ async def handle_old_arena_rank(event: MessageEvent, args: Message = CommandArg(
 @career_cmd.handle()
 async def handle_career(event: MessageEvent, args: Message = CommandArg()):
     user_input = args.extract_plain_text().strip()
+
+    if not user_input:
+        bindings = _get_bindings_for_qq(event.get_user_id())
+        if bindings:
+            user_input = bindings[0]["name"]
+
     if not user_input:
         await career_cmd.finish("请输入玩家ID，如：生涯 玩家名")
 

@@ -14,6 +14,26 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 arena_cmd = on_command("查竞技场", aliases={"查询竞技场", "rank", "new"}, priority=10, block=True)
 old_arena_cmd = on_command("查旧竞技场", aliases={"查询旧竞技场", "legacy", "old"}, priority=10, block=True)
 career_cmd = on_command("生涯", aliases={"career"}, priority=10, block=True)
+tutorial_cmd = on_command("tutorial", aliases={"教程", "帮助", "help", "指引"}, priority=10, block=True)
+
+TUTORIAL_TEXT = """【竞技场查询 Bot 使用指引】
+
+新版地下竞技场（查竞技场 / rank / new）
+  查竞技场            → 最新赛季前10名
+  查竞技场 6          → 第6赛季前10名
+  查竞技场 5 50       → 第5赛季前50名
+  赛季：1~6，别名：最新、上赛季
+
+旧版竞技场（查旧竞技场 / legacy / old）
+  查旧竞技场          → 第56赛季前10名
+  查旧竞技场 56       → 第56赛季前10名
+  查旧竞技场 49 100   → 第49赛季前100名
+  赛季：49~56，别名：最新、上赛季、默认
+
+玩家生涯（生涯 / career）
+  生涯 玩家名         → 该玩家所有赛季的榜单记录
+
+提示：最后一个数字为排名上限，Bot 自动分页获取。旧版及非最新新版赛季数据会被缓存。"""
 
 ALL_NEW_SEASONS = ["1", "2", "3", "4", "5", "6"]
 ALL_OLD_SEASONS = [str(i) for i in range(49, 57)]  # 49-56
@@ -303,3 +323,8 @@ async def handle_career(event: MessageEvent, args: Message = CommandArg()):
         await career_cmd.finish("请输入玩家ID，如：生涯 玩家名")
 
     await query_career(career_cmd, user_input)
+
+
+@tutorial_cmd.handle()
+async def handle_tutorial(event: MessageEvent, args: Message = CommandArg()):
+    await tutorial_cmd.finish(TUTORIAL_TEXT)

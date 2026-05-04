@@ -15,8 +15,8 @@ from arena_bot_cn.plugins.bind_account import _fuzzy_find_bindings, _find_bindin
 DATA_DIR = Path(__file__).parent.parent.parent / "data" / "arena_bot_cn"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-CACHE_TTL = 3600  # 1-hour disk cache TTL for the latest underground arena season
-MAX_CONCURRENT = 3  # max parallel API requests
+CACHE_TTL = 900  # 15-minutes disk cache TTL for the latest underground arena season
+MAX_CONCURRENT = 20  # max parallel API requests
 MAX_PLAYER_PAGES = 20  # pages to search when looking up a player
 
 _mem_cache: dict[tuple, tuple[float, list]] = {}  # (mode, season_id, page) -> (timestamp, players)
@@ -64,45 +64,38 @@ cutoff_cmd = on_command("分数线", aliases={"cutoff", "cutoffs"}, priority=10,
 
 TUTORIAL_TEXT = """【竞技场查询 Bot 使用指引】
 
-新版地下竞技场（查竞技场 / rank / new）
-  查竞技场            → 最新赛季前10名
-  查竞技场 6          → 第6赛季前10名
-  查竞技场 5 50       → 第5赛季前50名
-  查竞技场 100        → 最新赛季前100名
-  查竞技场 最新 100   → 最新赛季前100名
-  查竞技场 玩家名     → 最新赛季查询该玩家排名
-  查竞技场 6 玩家名   → 第6赛季查询该玩家排名
-  赛季：1~6，别名：最新、上赛季
+地下竞技场（查竞技场 / rank / new）  赛季：1~6，别名：最新、上赛季
+  查竞技场                   → 最新赛季前10名
+  查竞技场 6                → 第6赛季前10名
+  查竞技场 100              → 最新赛季前100名
+  查竞技场 5 50             → 第5赛季前50名
+  查竞技场 玩家名           → 查询玩家排名（支持模糊匹配）
+  查竞技场 6 玩家名         → 指定赛季查询玩家
+  查竞技场 A,B,C            → 多ID查询（, 或 ，分隔）
 
-旧版竞技场（查旧竞技场 / legacy / old）
-  查旧竞技场          → 第56赛季前10名
-  查旧竞技场 56       → 第56赛季前10名
-  查旧竞技场 49 100   → 第49赛季前100名
-  查旧竞技场 100      → 第56赛季前100名
-  查旧竞技场 玩家名   → 第56赛季查询该玩家排名
-  查旧竞技场 56 玩家名 → 第56赛季查询该玩家排名
-  赛季：49~56，别名：最新、上赛季、默认
+旧版竞技场（查旧竞技场 / legacy / old）  赛季：49~56，别名：最新、上赛季、默认
+  同上用法，赛季范围不同。
+
+分数线（分数线 / cutoff / cutoffs）
+  分数线                    → 最新赛季前10/25/50/100/500分数线
+  分数线 5                  → 第5赛季分数线
 
 玩家生涯（生涯 / career）
-  生涯 玩家名         → 该玩家所有赛季的榜单记录
+  生涯 玩家名               → 该玩家所有赛季排名记录
 
-账号绑定（账号绑定 / 绑定账号 / bind）
-  账号绑定              → 列出你已绑定的游戏账号
-  账号绑定 游戏ID       → 绑定游戏账号到你的QQ
-  账号绑定 删除 游戏ID  → 解除该游戏账号的绑定
-  账号绑定 列表         → 同空参数，列出已绑定账号
-  注意：同一游戏ID只能被一个QQ绑定，不同QQ不可重复绑定。
+账号绑定（账号绑定 / bind）
+  账号绑定                   → 列出已绑定账号
+  账号绑定 游戏ID            → 绑定账号
+  账号绑定 删除 游戏ID       → 解除绑定
+  注意：同一游戏ID只能被一个QQ绑定。
 
 战绩记录（战绩上传 / 我的战绩 / 删除战绩）
-  战绩上传 游戏ID 胜场数... → 上传胜场数据（最多30轮，每轮0~12胜）
-  我的战绩                  → 查看第一个绑定账号的战绩
-  我的战绩 游戏ID           → 查看指定绑定账号的战绩
-  删除战绩 游戏ID 轮次...   → 删除指定轮次（最多30个索引）
-  删除战绩 轮次...          → 对第一个绑定账号删除指定轮次
-  分数规则：第1轮分数=胜场×100，后续每轮=前轮分数×0.9+胜场×100
+  战绩上传 游戏ID 胜场…     → 上传胜场（最多30轮，0~12）
+  我的战绩                   → 查看首个绑定账号战绩
+  删除战绩 游戏ID 轮次…     → 删除指定轮次
 
-提示：查询榜单时最后一个数字为排名上限，Bot 自动分页获取。
-除地下竞技场最新赛季缓存 1 小时外，其余数据均永久缓存。"""
+提示：玩家名支持模糊匹配（绑定账号子串匹配 + 榜单全量搜索）；
+多ID以逗号分隔；数字参数默认为排名上限。"""
 
 ALL_NEW_SEASONS = ["1", "2", "3", "4", "5", "6"]
 ALL_OLD_SEASONS = [str(i) for i in range(49, 57)]  # 49-56
@@ -408,6 +401,13 @@ def _rank_prefix(position: int) -> str:
     return " " * 11
 
 
+def _season_display(season_name: str) -> str:
+    """Format season name: numeric → '第X赛季', alias → as-is."""
+    if season_name.isdigit():
+        return f"第{season_name}赛季"
+    return season_name
+
+
 async def query_career(matcher, player_id: str):
     # 并发获取所有赛季数据：旧版 49-56 + 新版 1-6
     old_tasks = [_get_cached_season_all("arena", sid) for sid in ALL_OLD_SEASONS]
@@ -519,22 +519,22 @@ async def query_arena(matcher, mode: str, season_id: str, limit: int, season_nam
                 tag = player.get("battle_tag", "")
                 display_name = tag.split("#")[0]
                 reply = (
-                    f"国服{mode_display}第{season_name}赛季榜单 - 玩家【{display_name}】\n"
+                    f"国服{mode_display}{_season_display(season_name)}榜单 - 玩家【{display_name}】\n"
                     f"第{rank}名 - {display_name} - {score}"
                 )
                 await matcher.finish(reply)
             elif not all_results and errors:
                 if len(errors) == 1:
                     await matcher.finish(
-                        f"在国服{mode_display}第{season_name}赛季中未找到玩家【{errors[0]}】。"
+                        f"在国服{mode_display}{_season_display(season_name)}中未找到玩家【{errors[0]}】。"
                     )
                 else:
-                    lines = [f"国服{mode_display}第{season_name}赛季榜单"]
+                    lines = [f"国服{mode_display}{_season_display(season_name)}榜单"]
                     for err_name in errors:
                         lines.append(f"未找到【{err_name}】的排名记录。")
                     await matcher.finish("\n".join(lines))
             else:
-                lines = [f"国服{mode_display}第{season_name}赛季榜单"]
+                lines = [f"国服{mode_display}{_season_display(season_name)}榜单"]
                 for i, player in enumerate(all_results):
                     rank = player.get("position", 0)
                     name = player.get("battle_tag", "隐藏玩家").split("#")[0]
@@ -551,11 +551,11 @@ async def query_arena(matcher, mode: str, season_id: str, limit: int, season_nam
             all_players = await _fetch_all_pages(mode, season_id, pages_needed, use_cache, cache_ttl)
 
             if not all_players:
-                await matcher.finish(f"未查询到【{season_name}】的榜单数据。")
+                await matcher.finish(f"未查询到{_season_display(season_name)}的榜单数据。")
 
             display = all_players[:limit]
 
-            lines = [f"国服{mode_display}第{season_name}赛季榜单 (1-{len(display)}名)"]
+            lines = [f"国服{mode_display}{_season_display(season_name)}榜单 (1-{len(display)}名)"]
             for player in display:
                 rank = player.get("position", 0)
                 name = player.get("battle_tag", "隐藏玩家").split("#")[0]
@@ -647,16 +647,15 @@ async def handle_cutoff(event: MessageEvent, args: Message = CommandArg()):
         all_players = await _fetch_all_pages(mode, season_id, CUTOFF_PAGES, use_cache=True, ttl=_resolve_cache_ttl(mode, season_id))
 
         if not all_players:
-            await cutoff_cmd.finish(f"未查询到第{season_name}赛季的榜单数据。")
+            await cutoff_cmd.finish(f"未查询到{_season_display(season_name)}的榜单数据。")
 
-        lines = [f"国服{mode_display}第{season_name}赛季分数线"]
+        lines = [f"国服{mode_display}{_season_display(season_name)}分数线"]
         for cutoff in CUTOFF_RANKS:
             if cutoff <= len(all_players):
                 player = all_players[cutoff - 1]
                 name = player.get("battle_tag", "隐藏玩家").split("#")[0]
                 score = player.get("score", 0)
-                prefix = _rank_prefix(cutoff)
-                lines.append(f"{prefix}第{cutoff}名 - {name} - {score}")
+                lines.append(f"第{cutoff}名 - {name} - {score}")
             else:
                 lines.append(f"[前{cutoff}] 第{cutoff}名 - 数据不足")
 

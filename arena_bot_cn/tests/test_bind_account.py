@@ -423,3 +423,67 @@ class TestIntegration:
         data = b._load_bindings()
         assert "persist" in data["by_game_id"]
         assert data["by_game_id"]["persist"]["qq"] == "111"
+
+
+# ============================================================
+# _fuzzy_find_bindings tests
+# ============================================================
+
+class TestFuzzyFindBindings:
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        monkeypatch.setattr(b, "DATA_DIR", self.tmpdir)
+        b._bindings_cache = None
+        b._save_bindings({
+            "by_game_id": {
+                "xiaoming": {"qq": "111", "name": "XiaoMing"},
+                "xiaohong": {"qq": "111", "name": "XiaoHong"},
+                "charlie": {"qq": "222", "name": "Charlie"},
+            }
+        })
+        yield
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        b._bindings_cache = None
+
+    def test_empty_query(self):
+        result = b._fuzzy_find_bindings("", "111")
+        assert result == []
+
+    def test_whitespace_only_query(self):
+        result = b._fuzzy_find_bindings("   ", "111")
+        assert result == []
+
+    def test_substring_match_two(self):
+        result = b._fuzzy_find_bindings("xiao", "111")
+        assert len(result) == 2
+        names = {r["name"] for r in result}
+        assert names == {"XiaoMing", "XiaoHong"}
+
+    def test_substring_match_one(self):
+        result = b._fuzzy_find_bindings("ming", "111")
+        assert len(result) == 1
+        assert result[0]["name"] == "XiaoMing"
+
+    def test_case_insensitive(self):
+        result = b._fuzzy_find_bindings("XIAO", "111")
+        assert len(result) == 2
+
+    def test_only_matches_own_qq(self):
+        """Should only match bindings belonging to the given QQ."""
+        result = b._fuzzy_find_bindings("char", "111")
+        assert result == []
+
+    def test_no_match_for_other_qq(self):
+        result = b._fuzzy_find_bindings("char", "222")
+        assert len(result) == 1
+        assert result[0]["name"] == "Charlie"
+
+    def test_no_match_returns_empty(self):
+        result = b._fuzzy_find_bindings("zzz", "111")
+        assert result == []
+
+    def test_preserves_original_case_in_name(self):
+        result = b._fuzzy_find_bindings("ming", "111")
+        assert result[0]["name"] == "XiaoMing"

@@ -19,102 +19,102 @@ class TestParseArgsNew:
     """新版地下竞技场 (is_old=False)"""
 
     def test_empty_input(self):
-        sid, limit, name, player = q.parse_args("")
+        sid, limit, name, player_names = q.parse_args("")
         assert sid == "6"
         assert limit == 10
         assert name == "最新赛季"
-        assert player is None
+        assert player_names == []
 
     def test_single_digit_valid_season(self):
-        sid, limit, name, player = q.parse_args("6")
+        sid, limit, name, player_names = q.parse_args("6")
         assert sid == "6"
         assert limit == 10
         assert name == "6"
-        assert player is None
+        assert player_names == []
 
     def test_single_digit_min_season(self):
-        sid, limit, name, player = q.parse_args("1")
+        sid, limit, name, player_names = q.parse_args("1")
         assert sid == "1"
         assert limit == 10
 
     def test_single_digit_out_of_range_is_limit(self):
-        sid, limit, name, player = q.parse_args("100")
+        sid, limit, name, player_names = q.parse_args("100")
         assert sid == "6"
         assert limit == 100
         assert name == "最新赛季"
-        assert player is None
+        assert player_names == []
 
     def test_single_digit_zero_clamped_to_1(self):
-        sid, limit, name, player = q.parse_args("0")
+        sid, limit, name, player_names = q.parse_args("0")
         assert limit == 1
 
     def test_single_digit_7_out_of_range_is_limit(self):
-        sid, limit, name, player = q.parse_args("7")
+        sid, limit, name, player_names = q.parse_args("7")
         assert sid == "6"
         assert limit == 7
 
     def test_single_alias_zuixin(self):
-        sid, limit, name, player = q.parse_args("最新")
+        sid, limit, name, player_names = q.parse_args("最新")
         assert sid == "6"
         assert limit == 10
         assert name == "最新"
-        assert player is None
+        assert player_names == []
 
     def test_single_alias_shangsaiji(self):
-        sid, limit, name, player = q.parse_args("上赛季")
+        sid, limit, name, player_names = q.parse_args("上赛季")
         assert sid == "5"
         assert limit == 10
         assert name == "上赛季"
-        assert player is None
+        assert player_names == []
 
     def test_single_alias_default(self):
-        sid, limit, name, player = q.parse_args("默认")
+        sid, limit, name, player_names = q.parse_args("默认")
         assert sid == "6"
         assert limit == 10
 
     def test_single_non_alias_is_player_name(self):
-        sid, limit, name, player = q.parse_args("小明")
+        sid, limit, name, player_names = q.parse_args("小明")
         assert sid == "6"
         assert limit == 10
         assert name == "最新赛季"
-        assert player == "小明"
+        assert player_names == ["小明"]
 
     def test_season_num_with_limit(self):
-        sid, limit, name, player = q.parse_args("5 50")
+        sid, limit, name, player_names = q.parse_args("5 50")
         assert sid == "5"
         assert limit == 50
         assert name == "5"
-        assert player is None
+        assert player_names == []
 
     def test_season_alias_with_limit(self):
-        sid, limit, name, player = q.parse_args("最新 100")
+        sid, limit, name, player_names = q.parse_args("最新 100")
         assert sid == "6"
         assert limit == 100
         assert name == "最新"
-        assert player is None
+        assert player_names == []
 
     def test_season_num_with_player_name(self):
-        sid, limit, name, player = q.parse_args("6 小明")
+        sid, limit, name, player_names = q.parse_args("6 小明")
         assert sid == "6"
         assert limit == 10
         assert name == "6"
-        assert player == "小明"
+        assert player_names == ["小明"]
 
     def test_season_alias_with_player_name(self):
-        sid, limit, name, player = q.parse_args("上赛季 小红")
+        sid, limit, name, player_names = q.parse_args("上赛季 小红")
         assert sid == "5"
         assert limit == 10
         assert name == "上赛季"
-        assert player == "小红"
+        assert player_names == ["小红"]
 
     def test_invalid_season_text_returns_none(self):
-        sid, limit, name, player = q.parse_args("invalid 50")
+        sid, limit, name, player_names = q.parse_args("invalid 50")
         assert sid is None
         assert name == "INVALID"
 
     def test_digit_0_as_season_not_valid(self):
         """0 is not a valid season ID for new arena"""
-        sid, limit, name, player = q.parse_args("0")
+        sid, limit, name, player_names = q.parse_args("0")
         assert sid == "6"
         assert limit == 1  # clamped from 0
 
@@ -123,68 +123,68 @@ class TestParseArgsOld:
     """旧版竞技场 (is_old=True)"""
 
     def test_empty_input(self):
-        sid, limit, name, player = q.parse_args("", is_old=True)
+        sid, limit, name, player_names = q.parse_args("", is_old=True)
         assert sid == "56"
         assert limit == 10
         assert name == "56"
-        assert player is None
+        assert player_names == []
 
     def test_single_digit_valid_season(self):
-        sid, limit, name, player = q.parse_args("50", is_old=True)
+        sid, limit, name, player_names = q.parse_args("50", is_old=True)
         assert sid == "50"
         assert limit == 10
 
     def test_single_digit_min_old_season(self):
-        sid, limit, name, player = q.parse_args("49", is_old=True)
+        sid, limit, name, player_names = q.parse_args("49", is_old=True)
         assert sid == "49"
 
     def test_single_digit_out_of_range_is_limit(self):
-        sid, limit, name, player = q.parse_args("100", is_old=True)
+        sid, limit, name, player_names = q.parse_args("100", is_old=True)
         assert sid == "56"
         assert limit == 100
-        assert player is None
+        assert player_names == []
 
     def test_single_digit_48_out_of_range_is_limit(self):
         """48 is below old season range, treated as limit"""
-        sid, limit, name, player = q.parse_args("48", is_old=True)
+        sid, limit, name, player_names = q.parse_args("48", is_old=True)
         assert sid == "56"
         assert limit == 48
 
     def test_single_alias_zuixin(self):
-        sid, limit, name, player = q.parse_args("最新", is_old=True)
+        sid, limit, name, player_names = q.parse_args("最新", is_old=True)
         assert sid == "56"
         assert name == "最新"
 
     def test_single_alias_shangsaiji(self):
-        sid, limit, name, player = q.parse_args("上赛季", is_old=True)
+        sid, limit, name, player_names = q.parse_args("上赛季", is_old=True)
         assert sid == "55"
         assert name == "上赛季"
 
     def test_single_alias_default(self):
-        sid, limit, name, player = q.parse_args("默认", is_old=True)
+        sid, limit, name, player_names = q.parse_args("默认", is_old=True)
         assert sid == "56"
         assert name == "默认"
 
     def test_single_non_alias_is_player_name(self):
-        sid, limit, name, player = q.parse_args("小明", is_old=True)
+        sid, limit, name, player_names = q.parse_args("小明", is_old=True)
         assert sid == "56"
         assert limit == 10
         assert name == "56"
-        assert player == "小明"
+        assert player_names == ["小明"]
 
     def test_season_num_with_player_name(self):
-        sid, limit, name, player = q.parse_args("50 小明", is_old=True)
+        sid, limit, name, player_names = q.parse_args("50 小明", is_old=True)
         assert sid == "50"
         assert limit == 10
-        assert player == "小明"
+        assert player_names == ["小明"]
 
     def test_season_alias_with_player_name(self):
-        sid, limit, name, player = q.parse_args("上赛季 小红", is_old=True)
+        sid, limit, name, player_names = q.parse_args("上赛季 小红", is_old=True)
         assert sid == "55"
-        assert player == "小红"
+        assert player_names == ["小红"]
 
     def test_max_old_season(self):
-        sid, limit, name, player = q.parse_args("56", is_old=True)
+        sid, limit, name, player_names = q.parse_args("56", is_old=True)
         assert sid == "56"
 
 
@@ -193,17 +193,17 @@ class TestParseArgsEdgeCases:
 
     def test_player_name_with_spaces(self):
         """名带空格的会被 split 拆开，last non-digit 为名"""
-        sid, limit, name, player = q.parse_args("6 小明 小红")
+        sid, limit, name, player_names = q.parse_args("6 小明 小红")
         assert sid is None  # "6 小明" is not a valid season key
-        assert player == "小红"
+        assert player_names == ["小红"]
 
     def test_large_limit(self):
-        sid, limit, name, player = q.parse_args("最新 999")
+        sid, limit, name, player_names = q.parse_args("最新 999")
         assert limit == 999
 
     def test_season_by_number_string(self):
         """数字字符串直接作为赛季号"""
-        sid, limit, name, player = q.parse_args("3 30")
+        sid, limit, name, player_names = q.parse_args("3 30")
         assert sid == "3"
         assert limit == 30
 
@@ -291,7 +291,8 @@ class TestFindPlayerInPage:
         result = q._find_player_in_page(players, "NoHash")
         assert result is not None
 
-    def test_exact_name_match(self):
+    def test_exact_name_match_priority(self):
+        """Exact match is preferred over substring match."""
         players = [
             {"battle_tag": "abc#1234", "position": 1},
             {"battle_tag": "abcdef#5678", "position": 2},
@@ -299,6 +300,135 @@ class TestFindPlayerInPage:
         result = q._find_player_in_page(players, "abc")
         assert result is not None
         assert result["battle_tag"] == "abc#1234"
+
+    def test_substring_match_fallback(self):
+        """When no exact match, substring match should work."""
+        players = [
+            {"battle_tag": "Alice#1111", "position": 1},
+            {"battle_tag": "浮生若梦#2222", "position": 2},
+        ]
+        result = q._find_player_in_page(players, "浮")
+        assert result is not None
+        assert result["battle_tag"] == "浮生若梦#2222"
+
+    def test_substring_match_exact_not_first(self):
+        """Substring match finds the first player whose name contains the query."""
+        players = [
+            {"battle_tag": "Alice#1111", "position": 1},
+            {"battle_tag": "浮生若梦#2222", "position": 2},
+            {"battle_tag": "浮云#3333", "position": 3},
+        ]
+        result = q._find_player_in_page(players, "浮")
+        assert result is not None
+        assert result["battle_tag"] == "浮生若梦#2222"
+
+
+# ============================================================
+# _find_all_players_in_page
+# ============================================================
+
+class TestFindAllPlayersInPage:
+    def test_returns_all_substring_matches(self):
+        players = [
+            {"battle_tag": "敲可爱丨小明#1111", "position": 1, "score": 9000},
+            {"battle_tag": "OtherGuy#2222", "position": 2, "score": 8000},
+            {"battle_tag": "敲可爱丨小红#3333", "position": 3, "score": 7000},
+        ]
+        result = q._find_all_players_in_page(players, "敲可爱")
+        assert len(result) == 2
+        names = {p["battle_tag"].split("#")[0] for p in result}
+        assert names == {"敲可爱丨小明", "敲可爱丨小红"}
+
+    def test_case_insensitive(self):
+        players = [
+            {"battle_tag": "XiaoMing#1111", "position": 1},
+            {"battle_tag": "XIAOHONG#2222", "position": 2},
+        ]
+        result = q._find_all_players_in_page(players, "xiao")
+        assert len(result) == 2
+
+    def test_no_matches_returns_empty(self):
+        players = [{"battle_tag": "Alice#1111", "position": 1}]
+        result = q._find_all_players_in_page(players, "zzz")
+        assert result == []
+
+    def test_empty_page(self):
+        result = q._find_all_players_in_page([], "anything")
+        assert result == []
+
+    def test_missing_battle_tag_skipped(self):
+        players = [
+            {"position": 1},
+            {"battle_tag": "Target#1234", "position": 2},
+        ]
+        result = q._find_all_players_in_page(players, "Target")
+        assert len(result) == 1
+
+
+# ============================================================
+# _search_all_players_in_season
+# ============================================================
+
+class TestSearchAllPlayersInSeason:
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        monkeypatch.setattr(q, "DATA_DIR", self.tmpdir)
+        q._mem_cache.clear()
+        yield
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        q._mem_cache.clear()
+
+    @pytest.mark.asyncio
+    async def test_finds_all_across_pages(self, monkeypatch):
+        """Should collect matching players from all pages without stopping early."""
+        async def mock_fetch(client, mode, season_id, page):
+            if page == 1:
+                return [
+                    {"battle_tag": "敲可爱丨小明#1111", "position": 1, "score": 9000},
+                    {"battle_tag": "Other#2222", "position": 2, "score": 8000},
+                ]
+            elif page == 2:
+                return [
+                    {"battle_tag": "敲可爱丨小红#3333", "position": 30, "score": 7000},
+                ]
+            return []
+
+        monkeypatch.setattr(q, "_fetch_page_from_api", mock_fetch)
+
+        result = await q._search_all_players_in_season("undergroundarena", "6", "敲可爱")
+        assert len(result) == 2
+        names = {p["battle_tag"].split("#")[0] for p in result}
+        assert names == {"敲可爱丨小明", "敲可爱丨小红"}
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_none_found(self, monkeypatch):
+        async def mock_fetch(client, mode, season_id, page):
+            if page == 1:
+                return [{"battle_tag": "Other#1111", "position": 1}]
+            return []
+
+        monkeypatch.setattr(q, "_fetch_page_from_api", mock_fetch)
+
+        result = await q._search_all_players_in_season("arena", "50", "Nobody")
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_stops_on_empty_api_response(self, monkeypatch):
+        """When API returns empty, stop scanning further pages."""
+        pages_fetched = []
+
+        async def mock_fetch(client, mode, season_id, page):
+            pages_fetched.append(page)
+            if page == 1:
+                return [{"battle_tag": "Test#1111", "position": 1}]
+            return []  # page 2 is empty → should break
+
+        monkeypatch.setattr(q, "_fetch_page_from_api", mock_fetch)
+
+        await q._search_all_players_in_season("arena", "50", "Test")
+        assert pages_fetched == [1, 2]  # page 1 fetched, page 2 fetched (returned empty → break)
 
 
 # ============================================================
@@ -327,8 +457,8 @@ class TestResolveCacheTTL:
 
 class TestRankPrefix:
     def test_top_10(self):
-        assert q._rank_prefix(1) == "[前10] "
-        assert q._rank_prefix(10) == "[前10] "
+        assert q._rank_prefix(1) == "[第1] "
+        assert q._rank_prefix(10) == "[第10] "
 
     def test_top_25(self):
         assert q._rank_prefix(11) == "[前25] "
@@ -699,3 +829,319 @@ class TestSeasonAliases:
     def test_all_old_seasons(self):
         assert q.ALL_OLD_SEASONS == [str(i) for i in range(49, 57)]
         assert len(q.ALL_OLD_SEASONS) == 8
+
+
+# ============================================================
+# _comma_split
+# ============================================================
+
+class TestCommaSplit:
+    def test_none(self):
+        assert q._comma_split(None) == []
+
+    def test_empty_string(self):
+        assert q._comma_split("") == []
+
+    def test_single_name(self):
+        assert q._comma_split("小明") == ["小明"]
+
+    def test_comma_separated_english(self):
+        assert q._comma_split("Alice,Bob") == ["Alice", "Bob"]
+
+    def test_chinese_comma(self):
+        assert q._comma_split("小明，小红") == ["小明", "小红"]
+
+    def test_mixed_commas(self):
+        assert q._comma_split("Alice,小红，Charlie") == ["Alice", "小红", "Charlie"]
+
+    def test_strips_whitespace(self):
+        assert q._comma_split(" 小明 , 小红 ") == ["小明", "小红"]
+
+    def test_filters_empty_tokens(self):
+        assert q._comma_split("小明,,小红") == ["小明", "小红"]
+
+
+# ============================================================
+# parse_args — 逗号多玩家
+# ============================================================
+
+class TestParseArgsCommaSeparated:
+    """Comma-separated player names for multi-ID queries."""
+
+    def test_single_player_comma_noop(self):
+        """A single name with no comma returns a one-element list."""
+        _, _, _, player_names = q.parse_args("小明")
+        assert player_names == ["小明"]
+
+    def test_two_players_english_comma(self):
+        _, _, _, player_names = q.parse_args("Alice,Bob")
+        assert player_names == ["Alice", "Bob"]
+
+    def test_two_players_chinese_comma(self):
+        _, _, _, player_names = q.parse_args("小明，小红")
+        assert player_names == ["小明", "小红"]
+
+    def test_mixed_comma(self):
+        _, _, _, player_names = q.parse_args("Alice,小红，Charlie")
+        assert player_names == ["Alice", "小红", "Charlie"]
+
+    def test_with_season_and_comma(self):
+        sid, limit, name, player_names = q.parse_args("6 小明,小红")
+        assert sid == "6"
+        assert limit == 10
+        assert player_names == ["小明", "小红"]
+
+    def test_with_season_limit_and_comma(self):
+        """With season, limit, and comma players the limit is the last digit before players."""
+        pass  # This pattern is not supported — last digit is always limit
+
+    def test_comma_players_no_spaces_around_comma(self):
+        """Multi-player comma separation: no spaces around commas (space-splitting comes first)."""
+        _, _, _, player_names = q.parse_args("小明,小红")
+        assert player_names == ["小明", "小红"]
+
+    def test_old_arena_comma_players(self):
+        sid, limit, name, player_names = q.parse_args("50 Alice,Bob", is_old=True)
+        assert sid == "50"
+        assert player_names == ["Alice", "Bob"]
+
+
+# ============================================================
+# _resolve_rank_player_input
+# ============================================================
+
+class TestResolveRankPlayerInput:
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        monkeypatch.setattr(q, "DATA_DIR", self.tmpdir)
+        # Clear any cached bindings in the bind_account module
+        import arena_bot_cn.plugins.bind_account as b
+        b._bindings_cache = None
+        monkeypatch.setattr(b, "DATA_DIR", self.tmpdir)
+        yield
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        b._bindings_cache = None
+
+    def _setup_bindings(self):
+        import arena_bot_cn.plugins.bind_account as b
+        b._save_bindings({
+            "by_game_id": {
+                "xiaoming": {"qq": "111", "name": "XiaoMing"},
+                "xiaohong": {"qq": "111", "name": "XiaoHong"},
+                "progamer2024": {"qq": "111", "name": "ProGamer2024"},
+            }
+        })
+
+    def test_exact_match_own_binding(self):
+        self._setup_bindings()
+        ids, from_binding = q._resolve_rank_player_input("XiaoMing", "111")
+        assert ids == ["XiaoMing"]
+        assert from_binding is True
+
+    def test_exact_match_case_insensitive(self):
+        self._setup_bindings()
+        ids, from_binding = q._resolve_rank_player_input("xiaoming", "111")
+        assert ids == ["XiaoMing"]
+        assert from_binding is True
+
+    def test_exact_match_someone_elses_binding_falls_back(self):
+        """If the exact match belongs to a different QQ, fall back to raw token."""
+        import arena_bot_cn.plugins.bind_account as b
+        b._save_bindings({
+            "by_game_id": {
+                "xiaoming": {"qq": "999", "name": "XiaoMing"},
+            }
+        })
+        ids, from_binding = q._resolve_rank_player_input("XiaoMing", "111")
+        # Belongs to QQ 999, so should fall back to raw
+        assert ids == ["XiaoMing"]
+        assert from_binding is False
+
+    def test_fuzzy_substring_match(self):
+        self._setup_bindings()
+        ids, from_binding = q._resolve_rank_player_input("Xiao", "111")
+        assert "XiaoMing" in ids
+        assert "XiaoHong" in ids
+        assert len(ids) == 2
+        assert from_binding is True
+
+    def test_fuzzy_single_match(self):
+        self._setup_bindings()
+        ids, from_binding = q._resolve_rank_player_input("Ming", "111")
+        assert ids == ["XiaoMing"]
+        assert from_binding is True
+
+    def test_fuzzy_match_deduplicates_by_display_name(self):
+        """If bindings have duplicate display names, deduplicate."""
+        import arena_bot_cn.plugins.bind_account as b
+        b._save_bindings({
+            "by_game_id": {
+                "player1": {"qq": "111", "name": "SameName"},
+                "player2": {"qq": "111", "name": "SameName"},
+            }
+        })
+        ids, from_binding = q._resolve_rank_player_input("player", "111")
+        assert ids == ["SameName"]
+        assert from_binding is True
+
+    def test_no_match_falls_back_to_raw(self):
+        self._setup_bindings()
+        ids, from_binding = q._resolve_rank_player_input("Stranger", "111")
+        assert ids == ["Stranger"]
+        assert from_binding is False
+
+    def test_empty_token(self):
+        self._setup_bindings()
+        ids, from_binding = q._resolve_rank_player_input("   ", "111")
+        assert ids == []
+        assert from_binding is False
+
+    def test_no_bindings_for_qq(self):
+        self._setup_bindings()
+        # QQ 222 has no bindings
+        ids, from_binding = q._resolve_rank_player_input("Xiao", "222")
+        assert ids == ["Xiao"]
+        assert from_binding is False
+
+
+# ============================================================
+# query_arena — 多玩家
+# ============================================================
+
+class TestQueryArenaMultiPlayer:
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        monkeypatch.setattr(q, "DATA_DIR", self.tmpdir)
+        q._mem_cache.clear()
+        import arena_bot_cn.plugins.bind_account as b
+        b._bindings_cache = None
+        monkeypatch.setattr(b, "DATA_DIR", self.tmpdir)
+        yield
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        q._mem_cache.clear()
+        b._bindings_cache = None
+        b._save_bindings({"by_game_id": {}})
+
+    @pytest.mark.asyncio
+    async def test_multi_player_combined_output(self, monkeypatch):
+        """Multiple exact-match players should all appear in output."""
+        import arena_bot_cn.plugins.bind_account as b
+        b._save_bindings({
+            "by_game_id": {
+                "alice": {"qq": "111", "name": "Alice"},
+                "bob": {"qq": "111", "name": "Bob"},
+            }
+        })
+
+        async def mock_search(mode, season_id, player_name):
+            if player_name == "Alice":
+                return {"battle_tag": "Alice#1234", "position": 5, "score": 9000}
+            if player_name == "Bob":
+                return {"battle_tag": "Bob#5678", "position": 12, "score": 8500}
+            return None
+
+        monkeypatch.setattr(q, "_search_player_in_season", mock_search)
+
+        matcher = AsyncMock()
+        await q.query_arena(matcher, "undergroundarena", "6", 10, "6", ["Alice", "Bob"], "111")
+        reply = matcher.finish.call_args[0][0]
+        assert "Alice" in reply
+        assert "Bob" in reply
+
+    @pytest.mark.asyncio
+    async def test_multi_player_partial_failure(self, monkeypatch):
+        """Not-found players should be listed at the end. Raw fallback → find-all."""
+        async def mock_find_all(mode, season_id, player_name):
+            if player_name == "Alice":
+                return [{"battle_tag": "Alice#1234", "position": 5, "score": 9000}]
+            return []
+
+        monkeypatch.setattr(q, "_search_all_players_in_season", mock_find_all)
+
+        matcher = AsyncMock()
+        await q.query_arena(matcher, "arena", "50", 10, "50", ["Alice", "Nobody"], "111")
+        reply = matcher.finish.call_args[0][0]
+        assert "Alice" in reply
+        assert "未找到【Nobody】" in reply
+
+    @pytest.mark.asyncio
+    async def test_multi_player_all_failure(self, monkeypatch):
+        """All not found should show all errors. Raw fallback → find-all."""
+        async def mock_find_all(mode, season_id, player_name):
+            return []
+
+        monkeypatch.setattr(q, "_search_all_players_in_season", mock_find_all)
+
+        matcher = AsyncMock()
+        await q.query_arena(matcher, "arena", "50", 10, "50", ["A", "B"], "111")
+        reply = matcher.finish.call_args[0][0]
+        assert "未找到【A】" in reply
+        assert "未找到【B】" in reply
+
+    @pytest.mark.asyncio
+    async def test_single_player_still_works(self, monkeypatch):
+        """Single binding-resolved player should use compact format (no --- separator)."""
+        import arena_bot_cn.plugins.bind_account as b
+        b._save_bindings({
+            "by_game_id": {
+                "alice": {"qq": "111", "name": "Alice"},
+            }
+        })
+
+        async def mock_search(mode, season_id, player_name):
+            return {"battle_tag": "Alice#1234", "position": 5, "score": 9000}
+
+        monkeypatch.setattr(q, "_search_player_in_season", mock_search)
+
+        matcher = AsyncMock()
+        await q.query_arena(matcher, "undergroundarena", "6", 10, "6", ["Alice"], "111")
+        reply = matcher.finish.call_args[0][0]
+        assert "---" not in reply
+        assert "Alice" in reply
+
+    @pytest.mark.asyncio
+    async def test_fuzzy_multi_match_searches_all(self, monkeypatch):
+        """A fuzzy token matching multiple bindings should use find-all with the original token."""
+        import arena_bot_cn.plugins.bind_account as b
+        b._save_bindings({
+            "by_game_id": {
+                "xiaoming": {"qq": "111", "name": "XiaoMing"},
+                "xiaohong": {"qq": "111", "name": "XiaoHong"},
+            }
+        })
+
+        searched = []
+
+        async def mock_find_all(mode, season_id, player_name):
+            searched.append(player_name)
+            return [
+                {"battle_tag": "XiaoMing#1234", "position": 1, "score": 1000},
+                {"battle_tag": "XiaoHong#5678", "position": 2, "score": 900},
+            ]
+
+        monkeypatch.setattr(q, "_search_all_players_in_season", mock_find_all)
+
+        matcher = AsyncMock()
+        await q.query_arena(matcher, "undergroundarena", "6", 10, "6", ["Xiao"], "111")
+        # Fuzzy match → original token "Xiao" used for find-all
+        assert searched == ["Xiao"]
+        reply = matcher.finish.call_args[0][0]
+        assert "XiaoMing" in reply
+        assert "XiaoHong" in reply
+
+    @pytest.mark.asyncio
+    async def test_no_player_shows_leaderboard(self, monkeypatch):
+        """Empty player_names should show the top-N leaderboard."""
+        async def mock_fetch_all(mode, season_id, pages_needed, use_cache, ttl):
+            return [{"battle_tag": f"P{i}#1234", "position": i, "score": i * 100} for i in range(1, 11)]
+
+        monkeypatch.setattr(q, "_fetch_all_pages", mock_fetch_all)
+
+        matcher = AsyncMock()
+        await q.query_arena(matcher, "undergroundarena", "6", 10, "6", [], "111")
+        reply = matcher.finish.call_args[0][0]
+        assert "P1" in reply

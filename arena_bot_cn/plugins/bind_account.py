@@ -62,6 +62,15 @@ def _find_binding_by_game_id(game_id_lower: str) -> dict | None:
     return data.get("by_game_id", {}).get(game_id_lower)
 
 
+def _fuzzy_find_bindings(query: str, qq: str) -> list[dict]:
+    """Find bindings whose game_id contains query (case-insensitive) for the given QQ."""
+    query = query.strip().lower()
+    if not query:
+        return []
+    bindings = _get_bindings_for_qq(qq)
+    return [b for b in bindings if query in b["game_id"]]
+
+
 def _parse_bind_args(user_input: str) -> tuple[str, str | None]:
     user_input = user_input.strip()
 

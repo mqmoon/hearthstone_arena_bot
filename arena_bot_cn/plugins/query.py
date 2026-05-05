@@ -15,7 +15,7 @@ from arena_bot_cn.plugins.bind_account import _fuzzy_find_bindings, _find_bindin
 DATA_DIR = Path(__file__).parent.parent.parent / "data" / "arena_bot_cn"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-CACHE_TTL = 900  # 15-minutes disk cache TTL for the latest underground arena season
+CACHE_TTL = 600  # 10-minutes disk cache TTL for the latest underground arena season
 MAX_CONCURRENT = 20  # max parallel API requests
 MAX_PLAYER_PAGES = 20  # pages to search when looking up a player
 
@@ -89,10 +89,11 @@ TUTORIAL_TEXT = """【竞技场查询 Bot 使用指引】
   账号绑定 删除 游戏ID       → 解除绑定
   注意：同一游戏ID只能被一个QQ绑定。
 
-战绩记录（战绩上传 / 我的战绩 / 删除战绩）
+战绩记录（战绩上传 / 我的战绩 / 删除战绩 / 清空战绩）
   战绩上传 游戏ID 胜场…     → 上传胜场（最多30轮，0~12）
   我的战绩                   → 查看首个绑定账号战绩
   删除战绩 游戏ID 轮次…     → 删除指定轮次
+  清空战绩 [游戏ID]          → 清空全部战绩（默认首个绑定账号）
 
 提示：玩家名支持模糊匹配（绑定账号子串匹配 + 榜单全量搜索）；
 多ID以逗号分隔；数字参数默认为排名上限。"""
@@ -100,16 +101,19 @@ TUTORIAL_TEXT = """【竞技场查询 Bot 使用指引】
 ALL_NEW_SEASONS = ["1", "2", "3", "4", "5", "6"]
 ALL_OLD_SEASONS = [str(i) for i in range(49, 57)]  # 49-56
 
+_latest_new = max(ALL_NEW_SEASONS, key=int)
+_latest_old = max(ALL_OLD_SEASONS, key=int)
+
 SEASON_ALIASES = {
-    "最新": "6",
-    "上赛季": "5",
-    "默认": "6",
+    "最新": _latest_new,
+    "上赛季": str(int(_latest_new) - 1),
+    "默认": _latest_new,
 }
 
 OLD_SEASON_ALIASES = {
-    "默认": "56",
-    "最新": "56",
-    "上赛季": "55",
+    "默认": _latest_old,
+    "最新": _latest_old,
+    "上赛季": str(int(_latest_old) - 1),
 }
 
 

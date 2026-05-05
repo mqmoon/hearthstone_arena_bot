@@ -25,6 +25,7 @@ EMA_DECAY = 0.9
 upload_cmd = on_command("战绩上传", aliases={"上传战绩", "upload"}, priority=10, block=True)
 my_records_cmd = on_command("我的战绩", aliases={"myrecord", "myrecords"}, priority=10, block=True)
 delete_records_cmd = on_command("删除战绩", aliases={"deleterecord", "deleterecords"}, priority=10, block=True)
+clear_records_cmd = on_command("清空战绩", aliases={"clearrecords"}, priority=10, block=True)
 
 
 # ============================================================
@@ -265,6 +266,26 @@ async def _handle_delete(matcher, qq: str, user_input: str):
     )
 
 
+async def _handle_clear(matcher, qq: str, user_input: str):
+    game_id_lower, display_name, error = _resolve_game_id(user_input, qq)
+    if error:
+        await matcher.finish(error)
+        return
+
+    data = _load_records()
+    entry = data.get("by_game_id", {}).get(game_id_lower)
+
+    if entry is None or not entry.get("rounds"):
+        await matcher.finish(f"游戏账号【{display_name}】还没有战绩记录，无需清空。")
+        return
+
+    count = len(entry["rounds"])
+    del data["by_game_id"][game_id_lower]
+    _save_records(data)
+
+    await matcher.finish(f"已清空游戏账号【{display_name}】的全部 {count} 轮战绩记录。")
+
+
 # ============================================================
 # Command registration
 # ============================================================
@@ -306,3 +327,16 @@ async def handle_delete_records(event: MessageEvent, args: Message = CommandArg(
     except Exception as e:
         logger.error(f"删除战绩操作报错: {e}")
         await delete_records_cmd.finish("删除战绩发生未知错误，请联系管理员。")
+
+
+@clear_records_cmd.handle()
+async def handle_clear_records(event: MessageEvent, args: Message = CommandArg()):
+    user_input = args.extract_plain_text().strip()
+    qq = event.get_user_id()
+    try:
+        await _handle_clear(clear_records_cmd, qq, user_input)
+    except FinishedException:
+        raise
+    except Exception as e:
+        logger.error(f"清空战绩操作报错: {e}")
+        await clear_records_cmd.finish("清空战绩发生未知错误，请联系管理员。")

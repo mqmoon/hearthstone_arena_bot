@@ -1,9 +1,17 @@
+import asyncio
+import io
 import json
+import tempfile
 import threading
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib import font_manager
+
 from nonebot import on_command
-from nonebot.adapters.onebot.v11 import Message, MessageEvent
+from nonebot.adapters.onebot.v11 import Message, MessageEvent, MessageSegment
 from nonebot.params import CommandArg
 from nonebot.log import logger
 from nonebot.exception import FinishedException
@@ -70,6 +78,7 @@ upload_cmd = on_command("战绩上传", aliases={"上传战绩", "upload"}, prio
 my_records_cmd = on_command("我的战绩", aliases={"myrecord", "myrecords"}, priority=10, block=True)
 delete_records_cmd = on_command("删除战绩", aliases={"deleterecord", "deleterecords"}, priority=10, block=True)
 clear_records_cmd = on_command("清空战绩", aliases={"clearrecords"}, priority=10, block=True)
+class_dist_cmd = on_command("战绩分布", aliases={"classdist"}, priority=10, block=True)
 
 
 # ============================================================
@@ -374,6 +383,103 @@ async def _handle_clear(matcher, qq: str, user_input: str):
     await matcher.finish(f"已清空游戏账号【{display_name}】的全部 {count} 轮战绩记录。")
 
 
+def _find_cjk_font() -> str | None:
+    """Find a CJK-capable font available on this system."""
+    candidates = [
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "C:\\Windows\\Fonts\\msyh.ttc",
+        "C:\\Windows\\Fonts\\simhei.ttf",
+        "C:\\Windows\\Fonts\\simsun.ttc",
+    ]
+    for path in candidates:
+        if Path(path).exists():
+            return path
+    return None
+
+CHART_FONT_PATH = _find_cjk_font()
+
+
+def _generate_distribution_chart(rounds: list[dict], game_name: str, score: float, avg_wins: float) -> Path:
+    """Generate class distribution bar chart. Returns path to saved PNG."""
+    class_stats: dict[str, list[int]] = {}
+    for r in rounds:
+        cls = r.get("class", "未知")
+        class_stats.setdefault(cls, []).append(r["wins"])
+
+    total = len(rounds)
+    # Build (label, pure_avg_wins) sorted by avg_wins desc
+    entries = []
+    for cls, wins_list in class_stats.items():
+        count = len(wins_list)
+        pct = count / total * 100
+        avg = sum(wins_list) / count
+        entries.append((cls, count, pct, avg))
+    entries.sort(key=lambda x: x[3], reverse=True)
+
+    labels = [f"{cls}\n{count}次 {pct:.1f}%" for cls, count, pct, _ in entries]
+    values = [avg for _, _, _, avg in entries]
+
+    font_prop = font_manager.FontProperties(fname=CHART_FONT_PATH, size=10)
+    title_font = font_manager.FontProperties(fname=CHART_FONT_PATH, size=13)
+
+    fig, ax = plt.subplots(figsize=(max(6, len(entries) * 1.4), 6))
+    bars = ax.bar(range(len(entries)), values, color="#4C72B0", width=0.6)
+    ax.set_xticks(range(len(entries)))
+    ax.set_xticklabels(labels, fontproperties=font_prop)
+    ax.set_ylabel("纯均胜", fontproperties=font_prop)
+    ax.set_ylim(0, max(values) + 1.5 if values else 5)
+
+    # Value labels on top of bars
+    for bar, val in zip(bars, values):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.2,
+                f"{val:.1f}", ha="center", va="bottom",
+                fontproperties=font_prop)
+
+    ax.set_title(
+        f"{game_name}  战绩分布\n分数: {score}  均胜: {avg_wins}",
+        fontproperties=title_font,
+        pad=18,
+    )
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    fig.savefig(tmp.name, dpi=150, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return Path(tmp.name)
+
+
+async def _handle_class_distribution(matcher, qq: str, user_input: str):
+    if CHART_FONT_PATH is None:
+        await matcher.finish("系统未找到中文字体，无法生成饼图。请联系管理员安装中文字体。")
+        return
+
+    game_id_lower, display_name, error = _resolve_game_id(user_input, qq)
+    if error:
+        await matcher.finish(error)
+        return
+
+    data = _load_records()
+    entry = data.get("by_game_id", {}).get(game_id_lower)
+
+    if entry is None or not entry.get("rounds"):
+        await matcher.finish(f"游戏账号【{display_name}】还没有战绩记录。")
+        return
+
+    rounds = entry["rounds"]
+    latest = rounds[-1]
+    score = latest["score"]
+    avg = latest.get("avg_wins", 0)
+
+    chart_path = await asyncio.to_thread(
+        _generate_distribution_chart, rounds, display_name, score, avg
+    )
+
+    await matcher.finish(MessageSegment.image(file=chart_path))
+
+
 # ============================================================
 # Command registration
 # ============================================================
@@ -428,3 +534,16 @@ async def handle_clear_records(event: MessageEvent, args: Message = CommandArg()
     except Exception as e:
         logger.error(f"清空战绩操作报错: {e}")
         await clear_records_cmd.finish("清空战绩发生未知错误，请联系管理员。")
+
+
+@class_dist_cmd.handle()
+async def handle_class_distribution(event: MessageEvent, args: Message = CommandArg()):
+    user_input = args.extract_plain_text().strip()
+    qq = event.get_user_id()
+    try:
+        await _handle_class_distribution(class_dist_cmd, qq, user_input)
+    except FinishedException:
+        raise
+    except Exception as e:
+        logger.error(f"战绩分布操作报错: {e}")
+        await class_dist_cmd.finish("战绩分布生成发生未知错误，请联系管理员。")

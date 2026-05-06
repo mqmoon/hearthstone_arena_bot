@@ -64,7 +64,7 @@ cutoff_cmd = on_command("分数线", aliases={"cutoff", "cutoffs"}, priority=10,
 
 TUTORIAL_TEXT = """【竞技场查询 Bot 使用指引】
 
-地下竞技场（查竞技场 / rank / new）  赛季：1~6，别名：最新、上赛季
+地下竞技场（查竞技场 / rank / new）  赛季：1~7，别名：最新、上赛季
   查竞技场                   → 最新赛季前10名
   查竞技场 6                → 第6赛季前10名
   查竞技场 100              → 最新赛季前100名
@@ -98,7 +98,7 @@ TUTORIAL_TEXT = """【竞技场查询 Bot 使用指引】
 提示：玩家名支持模糊匹配（绑定账号子串匹配 + 榜单全量搜索）；
 多ID以逗号分隔；数字参数默认为排名上限。"""
 
-ALL_NEW_SEASONS = ["1", "2", "3", "4", "5", "6"]
+ALL_NEW_SEASONS = ["1", "2", "3", "4", "5", "6", "7"]
 ALL_OLD_SEASONS = [str(i) for i in range(49, 57)]  # 49-56
 
 _latest_new = max(ALL_NEW_SEASONS, key=int)
@@ -259,7 +259,7 @@ def _comma_split(s: str | None) -> list[str]:
 
 def parse_args(user_input: str, is_old: bool = False):
     parts = user_input.split()
-    default_season = "56" if is_old else "6"
+    default_season = _latest_old if is_old else _latest_new
     default_name = "56" if is_old else "最新赛季"
     default_limit = 10
     player_names: list[str] = []
@@ -270,9 +270,9 @@ def parse_args(user_input: str, is_old: bool = False):
     # 单数字：视为赛季ID；不在合法赛季范围则视为排名上限
     if len(parts) == 1 and parts[0].isdigit():
         num = int(parts[0])
-        if is_old and 49 <= num <= 56:
+        if is_old and int(min(ALL_OLD_SEASONS)) <= num <= int(_latest_old):
             return str(num), default_limit, str(num), player_names
-        if not is_old and 1 <= num <= 6:
+        if not is_old and 1 <= num <= int(_latest_new):
             return str(num), default_limit, str(num), player_names
         # 数字不在赛季范围 -> 视为排名上限（如 rank 100 = 最新赛季前100名）
         return default_season, max(1, num), default_name, player_names
@@ -304,7 +304,7 @@ def parse_args(user_input: str, is_old: bool = False):
         season_id = OLD_SEASON_ALIASES.get(season_key)
         season_name = season_key
         if not season_id:
-            if season_key.isdigit() and 49 <= int(season_key) <= 56:
+            if season_key.isdigit() and int(min(ALL_OLD_SEASONS)) <= int(season_key) <= int(_latest_old):
                 season_id = season_key
             else:
                 season_id = None
@@ -312,7 +312,7 @@ def parse_args(user_input: str, is_old: bool = False):
         season_id = SEASON_ALIASES.get(season_key)
         season_name = season_key
         if not season_id:
-            if season_key.isdigit() and 1 <= int(season_key) <= 6:
+            if season_key.isdigit() and 1 <= int(season_key) <= int(_latest_new):
                 season_id = season_key
             else:
                 season_id = None

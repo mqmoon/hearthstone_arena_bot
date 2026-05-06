@@ -18,7 +18,7 @@ _records_cache_lock = threading.Lock()
 
 MAX_DELETE_INDICES = 30
 MAX_WINS = 12
-MIN_WINS = 1
+MIN_WINS = 0
 EMA_DECAY = 0.9
 
 CLASS_NAMES = [
@@ -30,16 +30,29 @@ CLASS_NAMES = [
 # Lowercase alias → canonical class name. Add/remove entries to maintain.
 CLASS_ALIASES: dict[str, str] = {
     "dk": "死亡骑士",
+    "死骑": "死亡骑士",
     "dh": "恶魔猎手",
+    "瞎子": "恶魔猎手",
     "sm": "萨满祭司",
+    "萨满": "萨满祭司",
     "fs": "法师",
+    "法": "法师",
     "lr": "猎人",
+    "猎": "猎人",
     "sq": "圣骑士",
+    "骑": "圣骑士",
+    "圣骑": "圣骑士",
     "ms": "牧师",
+    "牧": "牧师",
     "dz": "潜行者",
+    "贼": "潜行者",
+    "盗贼": "潜行者",
     "ss": "术士",
+    "术": "术士",
     "zs": "战士",
+    "战士": "战士",
     "dly": "德鲁伊",
+    "德": "德鲁伊",
 }
 
 
@@ -134,7 +147,7 @@ def _parse_upload_args(user_input: str, qq: str) -> tuple[str | None, str | None
     if wins < MIN_WINS or wins > MAX_WINS:
         return (None, None, None, None, None, f"胜场{wins}超出合法范围（{MIN_WINS}~{MAX_WINS}）。")
 
-    if wins >= 1 and wins <= 11:
+    if wins <= 11:
         if losses != 3:
             return (None, None, None, None, None, f"胜场{wins}时负场必须为3，实际为{losses}。")
     elif wins == 12:

@@ -247,11 +247,12 @@ class TestParseUploadArgs:
 
     # ── Win/loss validation ──
 
-    def test_wins_below_1(self):
+    def test_wins_0_losses_3_valid(self):
         self._bind("xiaoming", qq="111")
-        _, _, _, _, _, error = br._parse_upload_args("xiaoming 法师 0 3", "111")
-        assert "超出合法范围" in error
-        assert "0" in error
+        _, _, _, wins, losses, error = br._parse_upload_args("xiaoming 法师 0 3", "111")
+        assert error is None
+        assert wins == 0
+        assert losses == 3
 
     def test_wins_above_12(self):
         self._bind("xiaoming", qq="111")

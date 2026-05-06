@@ -163,67 +163,156 @@ class TestParseUploadArgs:
         data["by_game_id"][game_id.lower()] = {"qq": qq, "name": name or game_id}
         b._save_bindings(data)
 
+    # ── Error: empty / short input ──
+
     def test_empty_input(self):
-        _, _, error = br._parse_upload_args("", "111")
+        _, _, _, _, _, error = br._parse_upload_args("", "111")
         assert error is not None
         assert "战绩上传" in error
 
+    def test_only_game_id_not_enough(self):
+        self._bind("xiaoming", qq="111")
+        _, _, _, _, _, error = br._parse_upload_args("xiaoming", "111")
+        assert error is not None
+        assert "职业" in error
+
+    def test_too_few_args(self):
+        self._bind("xiaoming", qq="111")
+        _, _, _, _, _, error = br._parse_upload_args("xiaoming 法师", "111")
+        assert error is not None
+        assert "职业" in error and "胜场" in error
+
+    # ── Game ID resolution ──
+
     def test_game_id_not_bound(self):
-        _, _, error = br._parse_upload_args("nobody 5 3", "111")
+        _, _, _, _, _, error = br._parse_upload_args("nobody 法师 5 3", "111")
         assert "未绑定" in error
 
     def test_game_id_bound_to_other_qq(self):
         self._bind("xiaoming", qq="999", name="小明")
-        _, _, error = br._parse_upload_args("xiaoming 5 3", "111")
+        _, _, _, _, _, error = br._parse_upload_args("xiaoming 法师 5 3", "111")
         assert "未绑定" in error
 
-    def test_no_wins_provided(self):
-        self._bind("xiaoming", qq="111")
-        _, _, error = br._parse_upload_args("xiaoming", "111")
-        assert "至少一个胜场" in error
-
-    def test_valid_upload(self):
-        self._bind("xiaoming", qq="111")
-        game_id_lower, wins_list, error = br._parse_upload_args("xiaoming 5 3 7", "111")
+    def test_no_game_id_uses_first_binding(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        self._bind("xiaohong", qq="111", name="小红")
+        game_id_lower, display_name, class_name, wins, losses, error = br._parse_upload_args("法师 5 3", "111")
         assert error is None
         assert game_id_lower == "xiaoming"
-        assert wins_list == [5, 3, 7]
+        assert display_name == "小明"
+        assert class_name == "法师"
+        assert wins == 5
+        assert losses == 3
 
-    def test_exceeds_max_rounds(self):
-        self._bind("xiaoming", qq="111")
-        wins_str = " ".join(["5"] * 31)
-        _, _, error = br._parse_upload_args(f"xiaoming {wins_str}", "111")
-        assert "30" in error
-
-    def test_non_numeric_win(self):
-        self._bind("xiaoming", qq="111")
-        _, _, error = br._parse_upload_args("xiaoming 5 abc 7", "111")
-        assert "不是有效数字" in error
-        assert "abc" in error
-
-    def test_win_below_min(self):
-        self._bind("xiaoming", qq="111")
-        _, _, error = br._parse_upload_args("xiaoming 5 -1 7", "111")
-        assert "超出合法范围" in error
-        assert "-1" in error
-
-    def test_win_above_max(self):
-        self._bind("xiaoming", qq="111")
-        _, _, error = br._parse_upload_args("xiaoming 5 13 7", "111")
-        assert "超出合法范围" in error
-        assert "13" in error
-
-    def test_win_at_boundary_zero(self):
-        self._bind("xiaoming", qq="111")
-        game_id_lower, wins_list, error = br._parse_upload_args("xiaoming 0 12", "111")
-        assert error is None
-        assert wins_list == [0, 12]
+    def test_no_game_id_no_bindings(self):
+        _, _, _, _, _, error = br._parse_upload_args("法师 5 3", "111")
+        assert "还没有绑定" in error
 
     def test_case_insensitive_game_id(self):
         self._bind("XiaoMing", qq="111", name="XiaoMing")
-        game_id_lower, wins_list, error = br._parse_upload_args("xiaoming 5", "111")
+        game_id_lower, _, _, _, _, error = br._parse_upload_args("xiaoming 法师 5 3", "111")
         assert error is None
         assert game_id_lower == "xiaoming"
+
+    # ── Class resolution ──
+
+    def test_canonical_class_name(self):
+        self._bind("xiaoming", qq="111")
+        _, _, class_name, _, _, error = br._parse_upload_args("xiaoming 法师 5 3", "111")
+        assert error is None
+        assert class_name == "法师"
+
+    def test_class_alias_dk(self):
+        self._bind("xiaoming", qq="111")
+        _, _, class_name, _, _, error = br._parse_upload_args("xiaoming dk 5 3", "111")
+        assert error is None
+        assert class_name == "死亡骑士"
+
+    def test_class_alias_uppercase(self):
+        self._bind("xiaoming", qq="111")
+        _, _, class_name, _, _, error = br._parse_upload_args("xiaoming DK 5 3", "111")
+        assert error is None
+        assert class_name == "死亡骑士"
+
+    def test_class_alias_dh(self):
+        self._bind("xiaoming", qq="111")
+        _, _, class_name, _, _, error = br._parse_upload_args("xiaoming dh 5 3", "111")
+        assert error is None
+        assert class_name == "恶魔猎手"
+
+    def test_invalid_class(self):
+        self._bind("xiaoming", qq="111")
+        _, _, _, _, _, error = br._parse_upload_args("xiaoming 武僧 5 3", "111")
+        assert "不是合法的职业名称" in error
+
+    # ── Win/loss validation ──
+
+    def test_wins_below_1(self):
+        self._bind("xiaoming", qq="111")
+        _, _, _, _, _, error = br._parse_upload_args("xiaoming 法师 0 3", "111")
+        assert "超出合法范围" in error
+        assert "0" in error
+
+    def test_wins_above_12(self):
+        self._bind("xiaoming", qq="111")
+        _, _, _, _, _, error = br._parse_upload_args("xiaoming 法师 13 3", "111")
+        assert "超出合法范围" in error
+        assert "13" in error
+
+    def test_non_numeric_wins(self):
+        self._bind("xiaoming", qq="111")
+        _, _, _, _, _, error = br._parse_upload_args("xiaoming 法师 abc 3", "111")
+        assert "不是有效数字" in error
+
+    def test_non_numeric_losses(self):
+        self._bind("xiaoming", qq="111")
+        _, _, _, _, _, error = br._parse_upload_args("xiaoming 法师 5 xyz", "111")
+        assert "不是有效数字" in error
+
+    def test_wins_1_to_11_losses_must_be_3(self):
+        self._bind("xiaoming", qq="111")
+        for w in [1, 5, 11]:
+            _, _, _, _, _, error = br._parse_upload_args(f"xiaoming 法师 {w} 2", "111")
+            assert error is not None
+            assert "负场必须为3" in error
+
+    def test_wins_12_losses_0_1_2_valid(self):
+        self._bind("xiaoming", qq="111")
+        for lo in [0, 1, 2]:
+            _, _, _, wins, losses, error = br._parse_upload_args(f"xiaoming 法师 12 {lo}", "111")
+            assert error is None, f"losses={lo} should be valid"
+            assert wins == 12
+            assert losses == lo
+
+    def test_wins_12_losses_3_invalid(self):
+        self._bind("xiaoming", qq="111")
+        _, _, _, _, _, error = br._parse_upload_args("xiaoming 法师 12 3", "111")
+        assert "负场只能为0/1/2" in error
+
+    def test_wins_5_losses_3_valid(self):
+        self._bind("xiaoming", qq="111")
+        _, _, _, wins, losses, error = br._parse_upload_args("xiaoming 法师 5 3", "111")
+        assert error is None
+        assert wins == 5
+        assert losses == 3
+
+    def test_wins_1_losses_3_valid(self):
+        self._bind("xiaoming", qq="111")
+        _, _, _, wins, losses, error = br._parse_upload_args("xiaoming 法师 1 3", "111")
+        assert error is None
+        assert wins == 1
+        assert losses == 3
+
+    # ── Game ID with spaces ──
+
+    def test_game_id_with_spaces(self):
+        self._bind("player with space", qq="111", name="有空格")
+        game_id_lower, display_name, class_name, wins, losses, error = br._parse_upload_args(
+            "player with space 法师 5 3", "111"
+        )
+        assert error is None
+        assert game_id_lower == "player with space"
+        assert display_name == "有空格"
 
 
 class TestResolveGameId:
@@ -373,63 +462,93 @@ class TestHandleUpload:
     @pytest.mark.asyncio
     async def test_upload_first_time(self):
         self._bind("xiaoming", qq="111", name="小明")
-        await br._handle_upload(self.matcher, "111", "xiaoming 5 3 7")
+        await br._handle_upload(self.matcher, "111", "xiaoming 法师 5 3")
         reply = self.matcher.finish.call_args[0][0]
         assert "上传成功" in reply
-        assert "3" in reply  # 3 rounds
-        assert "1375.0" in reply  # 500, 750, 1375
+        assert "法师 5胜3负" in reply
+        assert "500" in reply  # 5*100
 
         data = br._load_records()
         rounds = data["by_game_id"]["xiaoming"]["rounds"]
-        assert len(rounds) == 3
+        assert len(rounds) == 1
         assert rounds[0]["wins"] == 5
+        assert rounds[0]["losses"] == 3
+        assert rounds[0]["class"] == "法师"
         assert rounds[0]["score"] == 500.0
-        assert rounds[1]["score"] == 750.0
-        assert rounds[2]["score"] == 1375.0
 
     @pytest.mark.asyncio
     async def test_upload_appends_to_existing(self):
         self._bind("xiaoming", qq="111", name="小明")
-        await br._handle_upload(self.matcher, "111", "xiaoming 5")
-        await br._handle_upload(self.matcher, "111", "xiaoming 3 7")
+        await br._handle_upload(self.matcher, "111", "xiaoming 法师 5 3")
+        await br._handle_upload(self.matcher, "111", "xiaoming 萨满祭司 3 3")
 
         data = br._load_records()
         rounds = data["by_game_id"]["xiaoming"]["rounds"]
-        assert len(rounds) == 3
-        assert rounds[2]["score"] == 1375.0
+        assert len(rounds) == 2
+        assert rounds[0]["score"] == 500.0
+        assert rounds[1]["score"] == 750.0  # 500*0.9 + 300
 
     @pytest.mark.asyncio
     async def test_upload_not_bound(self):
-        await br._handle_upload(self.matcher, "111", "nobody 5")
+        await br._handle_upload(self.matcher, "111", "nobody 法师 5 3")
         reply = self.matcher.finish.call_args[0][0]
         assert "未绑定" in reply
 
     @pytest.mark.asyncio
     async def test_upload_invalid_wins(self):
         self._bind("xiaoming", qq="111")
-        await br._handle_upload(self.matcher, "111", "xiaoming 5 13")
+        await br._handle_upload(self.matcher, "111", "xiaoming 法师 13 3")
         reply = self.matcher.finish.call_args[0][0]
         assert "超出合法范围" in reply
 
     @pytest.mark.asyncio
-    async def test_upload_boundary_wins(self):
+    async def test_upload_wins_12_losses_0(self):
         self._bind("xiaoming", qq="111", name="小明")
-        await br._handle_upload(self.matcher, "111", "xiaoming 0 12")
+        await br._handle_upload(self.matcher, "111", "xiaoming 法师 12 0")
         reply = self.matcher.finish.call_args[0][0]
         assert "上传成功" in reply
+        assert "12胜0负" in reply
 
         data = br._load_records()
         rounds = data["by_game_id"]["xiaoming"]["rounds"]
-        assert rounds[0]["wins"] == 0
-        assert rounds[1]["wins"] == 12
+        assert rounds[0]["wins"] == 12
+        assert rounds[0]["losses"] == 0
 
     @pytest.mark.asyncio
     async def test_upload_case_insensitive_game_id(self):
         self._bind("XiaoMing", qq="111", name="XiaoMing")
-        await br._handle_upload(self.matcher, "111", "xiaoming 5")
+        await br._handle_upload(self.matcher, "111", "xiaoming 法师 5 3")
         reply = self.matcher.finish.call_args[0][0]
         assert "上传成功" in reply
         assert "xiaoming" in br._load_records()["by_game_id"]
+
+    @pytest.mark.asyncio
+    async def test_upload_no_game_id_uses_first_binding(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        await br._handle_upload(self.matcher, "111", "法师 5 3")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "上传成功" in reply
+
+        data = br._load_records()
+        assert "xiaoming" in data["by_game_id"]
+
+    @pytest.mark.asyncio
+    async def test_upload_with_alias_dk(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        await br._handle_upload(self.matcher, "111", "xiaoming dk 12 1")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "上传成功" in reply
+        assert "死亡骑士" in reply
+
+        data = br._load_records()
+        assert data["by_game_id"]["xiaoming"]["rounds"][0]["class"] == "死亡骑士"
+
+    @pytest.mark.asyncio
+    async def test_upload_invalid_losses(self):
+        self._bind("xiaoming", qq="111")
+        await br._handle_upload(self.matcher, "111", "xiaoming 法师 5 2")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "负场必须为3" in reply
 
 
 class TestHandleMyRecords:
@@ -454,7 +573,7 @@ class TestHandleMyRecords:
         data["by_game_id"][game_id.lower()] = {"qq": qq, "name": name or game_id}
         b._save_bindings(data)
 
-    def _upload(self, game_id, wins_list):
+    def _upload(self, game_id, wins, losses, class_name="法师"):
         data = br._load_records()
         game_id_lower = game_id.lower()
         entry = data.get("by_game_id", {}).get(game_id_lower)
@@ -463,8 +582,7 @@ class TestHandleMyRecords:
             if "by_game_id" not in data:
                 data["by_game_id"] = {}
             data["by_game_id"][game_id_lower] = entry
-        for w in wins_list:
-            entry["rounds"].append({"wins": w, "score": 0})
+        entry["rounds"].append({"wins": wins, "losses": losses, "class": class_name, "score": 0})
         br._recalc_scores(entry["rounds"])
         br._save_records(data)
 
@@ -484,13 +602,15 @@ class TestHandleMyRecords:
     @pytest.mark.asyncio
     async def test_shows_all_rounds(self):
         self._bind("xiaoming", qq="111", name="小明")
-        self._upload("xiaoming", [5, 3, 7])
+        self._upload("xiaoming", 5, 3)
+        self._upload("xiaoming", 3, 3, "萨满祭司")
+        self._upload("xiaoming", 7, 3, "猎人")
         await br._handle_my_records(self.matcher, "111", "xiaoming")
         reply = self.matcher.finish.call_args[0][0]
         assert "小明" in reply
-        assert "第1轮. 5 胜" in reply
-        assert "第2轮. 3 胜" in reply
-        assert "第3轮. 7 胜" in reply
+        assert "第1轮. 法师 5胜3负" in reply
+        assert "第2轮. 萨满祭司 3胜3负" in reply
+        assert "第3轮. 猎人 7胜3负" in reply
         assert "当前分数" in reply
         assert "1375.0" in reply
 
@@ -498,7 +618,7 @@ class TestHandleMyRecords:
     async def test_empty_input_uses_first_binding(self):
         self._bind("xiaoming", qq="111", name="小明")
         self._bind("xiaohong", qq="111", name="小红")
-        self._upload("xiaoming", [5])
+        self._upload("xiaoming", 5, 3)
         await br._handle_my_records(self.matcher, "111", "")
         reply = self.matcher.finish.call_args[0][0]
         assert "小明" in reply
@@ -520,7 +640,6 @@ class TestHandleMyRecords:
     @pytest.mark.asyncio
     async def test_empty_records_shows_zero_rounds_message(self):
         self._bind("xiaoming", qq="111", name="小明")
-        # Create an empty entry
         br._save_records({"by_game_id": {"xiaoming": {"rounds": []}}})
         await br._handle_my_records(self.matcher, "111", "xiaoming")
         reply = self.matcher.finish.call_args[0][0]
@@ -670,10 +789,11 @@ class TestIntegration:
     async def test_full_upload_my_records_delete_cycle(self):
         self._bind("xiaoming", qq="111", name="小明")
 
-        # Upload
-        await br._handle_upload(self.matcher, "111", "xiaoming 5 3 7 2")
-        reply = self.matcher.finish.call_args[0][0]
-        assert "上传成功" in reply
+        # Upload multiple rounds
+        await br._handle_upload(self.matcher, "111", "xiaoming 法师 5 3")
+        await br._handle_upload(self.matcher, "111", "xiaoming 萨满祭司 3 3")
+        await br._handle_upload(self.matcher, "111", "xiaoming 猎人 7 3")
+        await br._handle_upload(self.matcher, "111", "xiaoming 战士 2 3")
 
         # My records
         await br._handle_my_records(self.matcher, "111", "xiaoming")
@@ -691,9 +811,9 @@ class TestIntegration:
         # Verify remaining rounds
         await br._handle_my_records(self.matcher, "111", "xiaoming")
         reply = self.matcher.finish.call_args[0][0]
-        assert "第1轮. 5 胜" in reply
-        assert "第2轮. 7 胜" in reply
-        assert "第3轮" not in reply  # only 2 rounds remain
+        assert "第1轮. 法师 5胜3负" in reply
+        assert "第2轮. 猎人 7胜3负" in reply
+        assert "第3轮" not in reply
         assert "第4轮" not in reply
 
     @pytest.mark.asyncio
@@ -701,40 +821,41 @@ class TestIntegration:
         self._bind("xiaoming", qq="111", name="小明")
         self._bind("xiaohong", qq="111", name="小红")
 
-        await br._handle_upload(self.matcher, "111", "xiaoming 5 3")
-        await br._handle_upload(self.matcher, "111", "xiaohong 7 2")
+        await br._handle_upload(self.matcher, "111", "xiaoming 法师 5 3")
+        await br._handle_upload(self.matcher, "111", "xiaohong 萨满祭司 7 3")
 
         # Each account has independent records
         await br._handle_my_records(self.matcher, "111", "xiaoming")
         reply = self.matcher.finish.call_args[0][0]
         assert "小明" in reply
-        assert "第1轮. 5 胜" in reply
-        assert "第2轮. 3 胜" in reply
+        assert "第1轮. 法师 5胜3负" in reply
         assert "小红" not in reply
 
         await br._handle_my_records(self.matcher, "111", "xiaohong")
         reply = self.matcher.finish.call_args[0][0]
         assert "小红" in reply
-        assert "第1轮. 7 胜" in reply
+        assert "第1轮. 萨满祭司 7胜3负" in reply
         assert "小明" not in reply
 
     @pytest.mark.asyncio
     async def test_disk_persistence(self):
         self._bind("xiaoming", qq="111", name="小明")
-        await br._handle_upload(self.matcher, "111", "xiaoming 5 3")
+        await br._handle_upload(self.matcher, "111", "xiaoming 法师 5 3")
 
         # Clear caches
         br._records_cache = None
 
         data = br._load_records()
         assert "xiaoming" in data["by_game_id"]
-        assert len(data["by_game_id"]["xiaoming"]["rounds"]) == 2
+        assert len(data["by_game_id"]["xiaoming"]["rounds"]) == 1
 
     @pytest.mark.asyncio
     async def test_ema_score_consistency_after_delete(self):
         """Verify EMA scores are correctly recalculated after deletion."""
         self._bind("xiaoming", qq="111", name="小明")
-        await br._handle_upload(self.matcher, "111", "xiaoming 10 10 10")
+        await br._handle_upload(self.matcher, "111", "xiaoming 法师 10 3")
+        await br._handle_upload(self.matcher, "111", "xiaoming 萨满祭司 10 3")
+        await br._handle_upload(self.matcher, "111", "xiaoming 猎人 10 3")
 
         # Delete middle round
         await br._handle_delete(self.matcher, "111", "xiaoming 2")

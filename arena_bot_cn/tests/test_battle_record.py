@@ -105,12 +105,15 @@ class TestRecalcScores:
         rounds = [{"wins": 5, "score": 0}]
         br._recalc_scores(rounds)
         assert rounds[0]["score"] == 500.0
+        assert rounds[0]["avg_wins"] == 5.0
 
     def test_two_rounds_ema(self):
         rounds = [{"wins": 5, "score": 0}, {"wins": 3, "score": 0}]
         br._recalc_scores(rounds)
         assert rounds[0]["score"] == 500.0
         assert rounds[1]["score"] == 500.0 * 0.9 + 3 * 100  # 750.0
+        assert rounds[0]["avg_wins"] == 5.0
+        assert rounds[1]["avg_wins"] == 4.0  # (5+3)/2
 
     def test_three_rounds_ema(self):
         rounds = [{"wins": 5, "score": 0}, {"wins": 3, "score": 0}, {"wins": 7, "score": 0}]
@@ -118,6 +121,24 @@ class TestRecalcScores:
         assert rounds[0]["score"] == 500.0
         assert rounds[1]["score"] == 750.0
         assert rounds[2]["score"] == round(750.0 * 0.9 + 7 * 100, 1)  # 1375.0
+        assert rounds[2]["avg_wins"] == 5.0  # (5+3+7)/3
+
+    def test_avg_wins_ema_after_30(self):
+        """After 30 rounds, avg_wins switches from simple mean to EMA(1/30)."""
+        rounds = [{"wins": 10, "score": 0} for _ in range(31)]
+        br._recalc_scores(rounds)
+        # Round 30 (index 29): simple mean = 10.0
+        assert rounds[29]["avg_wins"] == 10.0
+        # Round 31 (index 30): EMA = 10.0 * 29/30 + 10 * 1/30 = 10.0
+        assert rounds[30]["avg_wins"] == 10.0
+
+    def test_avg_wins_ema_decay(self):
+        """EMA avg_wins should decay when wins drop."""
+        rounds = [{"wins": 10, "score": 0} for _ in range(30)]
+        rounds.append({"wins": 0, "score": 0})
+        br._recalc_scores(rounds)
+        # After 30 rounds of 10: avg = 10.0; round 31: 10.0 * 29/30 + 0 * 1/30 ≈ 9.67
+        assert rounds[30]["avg_wins"] == round(10.0 * 29 / 30, 2)
 
     def test_ema_decays_over_time(self):
         """Scores decay: 12 wins then 0 wins repeatedly should show decay."""
@@ -468,6 +489,8 @@ class TestHandleUpload:
         assert "上传成功" in reply
         assert "法师 5胜3负" in reply
         assert "500" in reply  # 5*100
+        assert "均胜" in reply
+        assert "5.0" in reply
 
         data = br._load_records()
         rounds = data["by_game_id"]["xiaoming"]["rounds"]
@@ -613,7 +636,9 @@ class TestHandleMyRecords:
         assert "第2轮. 萨满祭司 3胜3负" in reply
         assert "第3轮. 猎人 7胜3负" in reply
         assert "当前分数" in reply
+        assert "均胜" in reply
         assert "1375.0" in reply
+        assert "5.0" in reply  # avg of [5,3,7] = 5.0
 
     @pytest.mark.asyncio
     async def test_empty_input_uses_first_binding(self):

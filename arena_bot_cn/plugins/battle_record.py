@@ -108,12 +108,22 @@ def _save_records(data: dict) -> None:
 
 
 def _recalc_scores(rounds: list[dict]) -> None:
-    """Recalculate EMA scores for a list of rounds in-place."""
+    """Recalculate EMA scores and avg_wins for a list of rounds in-place."""
     if not rounds:
         return
+    # EMA score
     rounds[0]["score"] = rounds[0]["wins"] * 100
     for i in range(1, len(rounds)):
         rounds[i]["score"] = round(rounds[i - 1]["score"] * EMA_DECAY + rounds[i]["wins"] * 100, 1)
+
+    # Avg wins (旧版竞技场算法): simple mean for ≤30 rounds, EMA(1/30) after
+    running_sum = 0
+    for i, r in enumerate(rounds):
+        running_sum += r["wins"]
+        if i < 30:
+            r["avg_wins"] = round(running_sum / (i + 1), 2)
+        else:
+            r["avg_wins"] = round(rounds[i - 1]["avg_wins"] * 29 / 30 + r["wins"] / 30, 2)
 
 
 # ============================================================
@@ -273,11 +283,13 @@ async def _handle_upload(matcher, qq: str, user_input: str):
     _save_records(data)
 
     total_rounds = len(entry["rounds"])
-    latest_score = entry["rounds"][-1]["score"]
+    latest = entry["rounds"][-1]
+    latest_score = latest["score"]
+    latest_avg = latest.get("avg_wins", "-")
     await matcher.finish(
         f"上传成功！{class_name} {wins}胜{losses}负已记录。\n"
         f"当前总轮次: {total_rounds}\n"
-        f"当前分数: {latest_score}"
+        f"当前分数: {latest_score}  均胜: {latest_avg}"
     )
 
 
@@ -301,7 +313,8 @@ async def _handle_my_records(matcher, qq: str, user_input: str):
         w = r["wins"]
         lo = r.get("losses", "-")
         lines.append(f"第{i}轮. {c} {w}胜{lo}负")
-    lines.append(f"当前分数: {rounds[-1]['score']}")
+    latest = rounds[-1]
+    lines.append(f"当前分数: {latest['score']}  均胜: {latest.get('avg_wins', '-')}")
 
     await matcher.finish("\n".join(lines))
 

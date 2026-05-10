@@ -41,8 +41,10 @@ CLASS_ALIASES: dict[str, str] = {
     "死骑": "死亡骑士",
     "dh": "恶魔猎手",
     "瞎子": "恶魔猎手",
+    "瞎": "恶魔猎手",
     "sm": "萨满祭司",
     "萨满": "萨满祭司",
+    "萨": "萨满祭司",
     "fs": "法师",
     "法": "法师",
     "lr": "猎人",
@@ -58,7 +60,7 @@ CLASS_ALIASES: dict[str, str] = {
     "ss": "术士",
     "术": "术士",
     "zs": "战士",
-    "战士": "战士",
+    "战": "战士",
     "dly": "德鲁伊",
     "德": "德鲁伊",
 }
@@ -385,6 +387,7 @@ async def _handle_clear(matcher, qq: str, user_input: str):
 
 def _find_cjk_font() -> str | None:
     """Find a CJK-capable font available on this system."""
+    # 1. Hardcoded common paths
     candidates = [
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
@@ -396,6 +399,14 @@ def _find_cjk_font() -> str | None:
     for path in candidates:
         if Path(path).exists():
             return path
+
+    # 2. Search matplotlib's own font list for CJK fonts
+    cjk_keywords = ["CJK", "WenQuanYi", "Noto Sans", "SimHei", "SimSun", "Microsoft YaHei"]
+    for f in font_manager.fontManager.ttflist:
+        for kw in cjk_keywords:
+            if kw.lower() in f.name.lower():
+                return f.fname
+
     return None
 
 CHART_FONT_PATH = _find_cjk_font()
@@ -453,7 +464,7 @@ def _generate_distribution_chart(rounds: list[dict], game_name: str, score: floa
 
 async def _handle_class_distribution(matcher, qq: str, user_input: str):
     if CHART_FONT_PATH is None:
-        await matcher.finish("系统未找到中文字体，无法生成饼图。请联系管理员安装中文字体。")
+        await matcher.finish("系统未找到中文字体，无法生成柱状图。请联系管理员安装中文字体。")
         return
 
     game_id_lower, display_name, error = _resolve_game_id(user_input, qq)

@@ -569,9 +569,11 @@ async def _handle_score_query(matcher, qq: str, user_input: str):
         await matcher.finish(f"游戏账号【{display_name}】还没有战绩记录。")
         return
 
+    total_rounds = len(entry["rounds"])
     latest = entry["rounds"][-1]
     await matcher.finish(
         f"游戏账号【{display_name}】\n"
+        f"当前轮次: {total_rounds}\n"
         f"当前分数: {latest['score']}  均胜: {latest.get('avg_wins', '-')}"
     )
 

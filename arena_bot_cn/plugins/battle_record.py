@@ -78,10 +78,11 @@ def _resolve_class(name: str) -> str | None:
     return None
 
 upload_cmd = on_command("战绩上传", aliases={"上传战绩", "upload"}, priority=10, block=True)
-my_records_cmd = on_command("我的战绩", aliases={"myrecord", "myrecords"}, priority=10, block=True)
+record_list_cmd = on_command("战绩列表", aliases={"我的战绩", "recordlist"}, priority=10, block=True)
 delete_records_cmd = on_command("删除战绩", aliases={"deleterecord", "deleterecords"}, priority=10, block=True)
 clear_records_cmd = on_command("清空战绩", aliases={"clearrecords"}, priority=10, block=True)
 class_dist_cmd = on_command("战绩分布", aliases={"classdist"}, priority=10, block=True)
+score_query_cmd = on_command("分数查询", aliases={"score"}, priority=10, block=True)
 
 
 # ============================================================
@@ -142,86 +143,113 @@ def _recalc_scores(rounds: list[dict]) -> None:
 # Arg parsing
 # ============================================================
 
-def _parse_upload_args(user_input: str, qq: str) -> tuple[str | None, str | None, str | None, int | None, int | None, str | None]:
-    """Parse upload args. Returns (game_id_lower, display_name, class_name, wins, losses, error).
-    Format: 战绩上传 [游戏ID] 职业 胜场 [负场]
-    胜场0-11时负场可省略（默认负场=3），胜场12时负场必填（0/1/2）。"""
+def _parse_upload_args(user_input: str, qq: str) -> tuple[str | None, str | None, list[dict] | None, str | None]:
+    """Parse multi-round upload args. Returns (game_id_lower, display_name, rounds, error).
+    rounds is a list of {"class": str, "wins": int, "losses": int} dicts.
+    Format: 战绩上传 [游戏ID] 职业 胜场 [负场] [职业 胜场 [负场] ...]
+    胜场0-11时负场可省略（默认负场=3），胜场12时负场必填（0/1/2）。
+    单次最多上传30轮。"""
     parts = user_input.split()
     if not parts:
-        return (None, None, None, None, None,
-                "请使用：战绩上传 [游戏ID] 职业 胜场 [负场]\n"
-                "胜场0-11时可省略负场（默认负场=3）\n"
-                "示例：战绩上传 法师 7    （胜场7时无需负场）\n"
+        return (None, None, None,
+                "请使用：战绩上传 [游戏ID] 职业 胜场 [负场] [职业 胜场 [负场] ...]\n"
+                "胜场0-11时可省略负场（默认负场=3），单次最多30轮\n"
+                "示例：战绩上传 法师 7\n"
+                "示例：战绩上传 法 7 牧 12 1 猎 5\n"
                 "示例：战绩上传 小明 法师 12 0")
 
-    if len(parts) < 2:
-        return (None, None, None, None, None,
-                "请提供职业和胜场数。\n"
-                "胜场0-11时可省略负场（默认负场=3）\n"
-                "示例：战绩上传 法师 7\n"
-                "示例：战绩上传 法师 12 0")
-
-    # ── Parse wins & losses from the right ──
-    # Full format: ... 职业 胜场 负场  (last two tokens are digits)
-    # Short format: ... 职业 胜场       (only last token is digit, wins=0-11)
-    if len(parts) >= 3 and parts[-1].isdigit() and parts[-2].isdigit():
-        # Full format: both wins and losses provided
-        loss_str = parts[-1]
-        win_str = parts[-2]
-        losses = int(loss_str)
-        wins = int(win_str)
-        class_str = parts[-3]
-        game_id_str = " ".join(parts[:-3]).strip()
-    elif parts[-1].isdigit():
-        # Short format: only wins provided, losses defaults to 3
-        win_str = parts[-1]
-        wins = int(win_str)
-        class_str = parts[-2]
-        game_id_str = " ".join(parts[:-2]).strip()
-        if wins == 12:
-            return (None, None, None, None, None,
-                    "胜场12时必须提供负场（0/1/2）。\n示例：战绩上传 法师 12 0")
-        losses = 3
+    # Find game_id boundary: scan left-to-right for first <class-like> <digit> pair
+    game_id_end = 0
+    for i in range(len(parts) - 1):
+        if _resolve_class(parts[i]) is not None and parts[i + 1].isdigit():
+            game_id_end = i
+            break
     else:
-        return (None, None, None, None, None,
-                f"无法解析胜场参数。\n"
-                f"格式：战绩上传 [游戏ID] 职业 胜场 [负场]")
+        return (None, None, None,
+                "无法识别职业/胜场，请检查输入格式。\n"
+                "格式：战绩上传 [游戏ID] 职业 胜场 [负场] [...]")
 
-    if wins < MIN_WINS or wins > MAX_WINS:
-        return (None, None, None, None, None, f"胜场{wins}超出合法范围（{MIN_WINS}~{MAX_WINS}）。")
+    game_id_str = " ".join(parts[:game_id_end]).strip()
+    round_tokens = parts[game_id_end:]
 
-    if wins <= 11:
-        if losses != 3:
-            return (None, None, None, None, None,
-                    f"胜场{wins}时负场必须为3，实际为{losses}。\n"
-                    f"提示：胜场0-11时可省略负场，默认负场=3。")
-    elif wins == 12:
-        if losses not in (0, 1, 2):
-            return (None, None, None, None, None, f"胜场12时负场只能为0/1/2，实际为{losses}。")
-
-    # ── Resolve class ──
-    class_name = _resolve_class(class_str)
-    if class_name is None:
-        return (None, None, None, None, None,
-                f"「{class_str}」不是合法的职业名称或别名。\n合法职业：{' / '.join(CLASS_NAMES)}")
-
+    # Resolve game_id
     if not game_id_str:
         bindings = _get_bindings_for_qq(qq)
         if not bindings:
-            return (None, None, None, None, None,
+            return (None, None, None,
                     "你还没有绑定任何游戏账号，请先使用「账号绑定 游戏ID」进行绑定。")
-        return (bindings[0]["game_id"], bindings[0]["name"], class_name, wins, losses, None)
+        game_id_lower = bindings[0]["game_id"]
+        display_name = bindings[0]["name"]
+    else:
+        game_id_lower = game_id_str.lower()
+        binding = _find_binding_by_game_id(game_id_lower)
+        if binding is None:
+            return (None, None, None,
+                    f"游戏账号【{game_id_str}】未绑定到你的QQ，请先使用「账号绑定 {game_id_str}」进行绑定。")
+        if binding["qq"] != qq:
+            return (None, None, None,
+                    f"游戏账号【{game_id_str}】未绑定到你的QQ，请先使用「账号绑定 {game_id_str}」进行绑定。")
+        display_name = binding["name"]
 
-    game_id_lower = game_id_str.lower()
-    binding = _find_binding_by_game_id(game_id_lower)
-    if binding is None:
-        return (None, None, None, None, None,
-                f"游戏账号【{game_id_str}】未绑定到你的QQ，请先使用「账号绑定 {game_id_str}」进行绑定。")
-    if binding["qq"] != qq:
-        return (None, None, None, None, None,
-                f"游戏账号【{game_id_str}】未绑定到你的QQ，请先使用「账号绑定 {game_id_str}」进行绑定。")
+    # Parse rounds greedily
+    rounds: list[dict] = []
+    idx = 0
+    while idx < len(round_tokens):
+        round_num = len(rounds) + 1
+        class_str = round_tokens[idx]
+        class_name = _resolve_class(class_str)
+        if class_name is None:
+            return (None, None, None,
+                    f"第{round_num}轮：「{class_str}」不是合法的职业名称或别名。\n"
+                    f"合法职业：{' / '.join(CLASS_NAMES)}")
 
-    return (game_id_lower, binding["name"], class_name, wins, losses, None)
+        if idx + 1 >= len(round_tokens):
+            return (None, None, None, f"第{round_num}轮：缺少胜场参数。")
+
+        win_str = round_tokens[idx + 1]
+        if not win_str.isdigit():
+            return (None, None, None, f"第{round_num}轮：胜场「{win_str}」不是有效数字。")
+        wins = int(win_str)
+
+        if wins < MIN_WINS or wins > MAX_WINS:
+            return (None, None, None,
+                    f"第{round_num}轮：胜场{wins}超出合法范围（{MIN_WINS}~{MAX_WINS}）。")
+
+        if wins == 12:
+            if idx + 2 >= len(round_tokens):
+                return (None, None, None,
+                        f"第{round_num}轮：胜场12时必须提供负场（0/1/2）。")
+            loss_str = round_tokens[idx + 2]
+            if not loss_str.isdigit():
+                return (None, None, None,
+                        f"第{round_num}轮：负场「{loss_str}」不是有效数字。")
+            losses = int(loss_str)
+            if losses not in (0, 1, 2):
+                return (None, None, None,
+                        f"第{round_num}轮：胜场12时负场只能为0/1/2，实际为{losses}。")
+            idx += 3
+        else:
+            # wins 0-11: losses optional, defaults to 3
+            if idx + 2 < len(round_tokens) and round_tokens[idx + 2].isdigit():
+                losses = int(round_tokens[idx + 2])
+                if losses != 3:
+                    return (None, None, None,
+                            f"第{round_num}轮：胜场{wins}时负场必须为3，实际为{losses}。\n"
+                            f"提示：胜场0-11时可省略负场，默认负场=3。")
+                idx += 3
+            else:
+                losses = 3
+                idx += 2
+
+        rounds.append({"class": class_name, "wins": wins, "losses": losses})
+
+        if len(rounds) > 30:
+            return (None, None, None, "单次最多上传30轮战绩。")
+
+    if not rounds:
+        return (None, None, None, "未能解析任何有效轮次。")
+
+    return (game_id_lower, display_name, rounds, None)
 
 
 def _resolve_game_id(user_input: str, qq: str) -> tuple[str | None, str | None, str | None]:
@@ -243,6 +271,21 @@ def _resolve_game_id(user_input: str, qq: str) -> tuple[str | None, str | None, 
         return (None, None, f"游戏账号【{user_input}】不在你的绑定列表中。")
 
     return (game_id_lower, binding["name"], None)
+
+
+def _resolve_game_id_lookup(user_input: str, qq: str) -> tuple[str | None, str | None, str | None]:
+    """Resolve game_id for lookup/query commands. No binding restriction when game_id is provided.
+    Returns (game_id_lower, display_name, error_message)."""
+    user_input = user_input.strip()
+
+    if not user_input:
+        bindings = _get_bindings_for_qq(qq)
+        if not bindings:
+            return (None, None, "你还没有绑定任何游戏账号，请先使用「账号绑定 游戏ID」进行绑定。")
+        return (bindings[0]["game_id"], bindings[0]["name"], None)
+
+    game_id_lower = user_input.lower()
+    return (game_id_lower, user_input, None)
 
 
 def _parse_delete_args(user_input: str, qq: str) -> tuple[str | None, str | None, list[int] | None, str | None]:
@@ -296,7 +339,7 @@ def _parse_delete_args(user_input: str, qq: str) -> tuple[str | None, str | None
 # ============================================================
 
 async def _handle_upload(matcher, qq: str, user_input: str):
-    game_id_lower, display_name, class_name, wins, losses, error = _parse_upload_args(user_input, qq)
+    game_id_lower, display_name, rounds, error = _parse_upload_args(user_input, qq)
     if error:
         await matcher.finish(error)
         return
@@ -309,7 +352,8 @@ async def _handle_upload(matcher, qq: str, user_input: str):
             data["by_game_id"] = {}
         data["by_game_id"][game_id_lower] = entry
 
-    entry["rounds"].append({"wins": wins, "losses": losses, "class": class_name, "score": 0})
+    for r in rounds:
+        entry["rounds"].append({"wins": r["wins"], "losses": r["losses"], "class": r["class"], "score": 0})
     _recalc_scores(entry["rounds"])
     _save_records(data)
 
@@ -317,15 +361,16 @@ async def _handle_upload(matcher, qq: str, user_input: str):
     latest = entry["rounds"][-1]
     latest_score = latest["score"]
     latest_avg = latest.get("avg_wins", "-")
+    uploaded_count = len(rounds)
     await matcher.finish(
-        f"上传成功！{class_name} {wins}胜{losses}负已记录。\n"
+        f"上传成功！已记录{uploaded_count}轮战绩。\n"
         f"当前总轮次: {total_rounds}\n"
         f"当前分数: {latest_score}  均胜: {latest_avg}"
     )
 
 
-async def _handle_my_records(matcher, qq: str, user_input: str):
-    game_id_lower, display_name, error = _resolve_game_id(user_input, qq)
+async def _handle_record_list(matcher, qq: str, user_input: str):
+    game_id_lower, display_name, error = _resolve_game_id_lookup(user_input, qq)
     if error:
         await matcher.finish(error)
         return
@@ -334,7 +379,7 @@ async def _handle_my_records(matcher, qq: str, user_input: str):
     entry = data.get("by_game_id", {}).get(game_id_lower)
 
     if entry is None or not entry.get("rounds"):
-        await matcher.finish(f"游戏账号【{display_name}】还没有战绩记录。\n使用「战绩上传 [游戏ID] 职业 胜场 负场」上传战绩。")
+        await matcher.finish(f"游戏账号【{display_name}】还没有战绩记录。")
         return
 
     rounds = entry["rounds"]
@@ -487,7 +532,7 @@ async def _handle_class_distribution(matcher, qq: str, user_input: str):
         await matcher.finish("系统未找到中文字体，无法生成柱状图。请联系管理员安装中文字体。")
         return
 
-    game_id_lower, display_name, error = _resolve_game_id(user_input, qq)
+    game_id_lower, display_name, error = _resolve_game_id_lookup(user_input, qq)
     if error:
         await matcher.finish(error)
         return
@@ -511,6 +556,26 @@ async def _handle_class_distribution(matcher, qq: str, user_input: str):
     await matcher.finish(MessageSegment.image(file=chart_path))
 
 
+async def _handle_score_query(matcher, qq: str, user_input: str):
+    game_id_lower, display_name, error = _resolve_game_id_lookup(user_input, qq)
+    if error:
+        await matcher.finish(error)
+        return
+
+    data = _load_records()
+    entry = data.get("by_game_id", {}).get(game_id_lower)
+
+    if entry is None or not entry.get("rounds"):
+        await matcher.finish(f"游戏账号【{display_name}】还没有战绩记录。")
+        return
+
+    latest = entry["rounds"][-1]
+    await matcher.finish(
+        f"游戏账号【{display_name}】\n"
+        f"当前分数: {latest['score']}  均胜: {latest.get('avg_wins', '-')}"
+    )
+
+
 # ============================================================
 # Command registration
 # ============================================================
@@ -528,17 +593,17 @@ async def handle_upload(event: MessageEvent, args: Message = CommandArg()):
         await upload_cmd.finish("上传战绩发生未知错误，请联系管理员。")
 
 
-@my_records_cmd.handle()
-async def handle_my_records(event: MessageEvent, args: Message = CommandArg()):
+@record_list_cmd.handle()
+async def handle_record_list(event: MessageEvent, args: Message = CommandArg()):
     user_input = args.extract_plain_text().strip()
     qq = event.get_user_id()
     try:
-        await _handle_my_records(my_records_cmd, qq, user_input)
+        await _handle_record_list(record_list_cmd, qq, user_input)
     except FinishedException:
         raise
     except Exception as e:
-        logger.error(f"我的战绩操作报错: {e}")
-        await my_records_cmd.finish("查询战绩发生未知错误，请联系管理员。")
+        logger.error(f"战绩列表操作报错: {e}")
+        await record_list_cmd.finish("查询战绩列表发生未知错误，请联系管理员。")
 
 
 @delete_records_cmd.handle()
@@ -578,3 +643,16 @@ async def handle_class_distribution(event: MessageEvent, args: Message = Command
     except Exception as e:
         logger.error(f"战绩分布操作报错: {e}")
         await class_dist_cmd.finish("战绩分布生成发生未知错误，请联系管理员。")
+
+
+@score_query_cmd.handle()
+async def handle_score_query(event: MessageEvent, args: Message = CommandArg()):
+    user_input = args.extract_plain_text().strip()
+    qq = event.get_user_id()
+    try:
+        await _handle_score_query(score_query_cmd, qq, user_input)
+    except FinishedException:
+        raise
+    except Exception as e:
+        logger.error(f"分数查询操作报错: {e}")
+        await score_query_cmd.finish("分数查询发生未知错误，请联系管理员。")

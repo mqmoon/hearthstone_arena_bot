@@ -78,11 +78,11 @@ def _resolve_class(name: str) -> str | None:
     return None
 
 upload_cmd = on_command("战绩上传", aliases={"上传战绩", "upload"}, priority=10, block=True)
-record_list_cmd = on_command("战绩列表", aliases={"我的战绩", "recordlist"}, priority=10, block=True)
+record_list_cmd = on_command("战绩列表", aliases={"我的战绩", "recordlist", "盒战绩"}, priority=10, block=True)
 delete_records_cmd = on_command("删除战绩", aliases={"deleterecord", "deleterecords"}, priority=10, block=True)
 clear_records_cmd = on_command("清空战绩", aliases={"clearrecords"}, priority=10, block=True)
 class_dist_cmd = on_command("战绩分布", aliases={"classdist"}, priority=10, block=True)
-score_query_cmd = on_command("分数查询", aliases={"score"}, priority=10, block=True)
+score_query_cmd = on_command("分数查询", aliases={"score", "盒分数", "盒"}, priority=10, block=True)
 
 
 # ============================================================

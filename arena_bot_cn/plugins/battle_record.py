@@ -143,48 +143,67 @@ def _recalc_scores(rounds: list[dict]) -> None:
 # ============================================================
 
 def _parse_upload_args(user_input: str, qq: str) -> tuple[str | None, str | None, str | None, int | None, int | None, str | None]:
-    """Parse upload args (new format). Returns (game_id_lower, display_name, class_name, wins, losses, error).
-    Format: 战绩上传 [游戏ID] 职业 胜场 负场"""
+    """Parse upload args. Returns (game_id_lower, display_name, class_name, wins, losses, error).
+    Format: 战绩上传 [游戏ID] 职业 胜场 [负场]
+    胜场0-11时负场可省略（默认负场=3），胜场12时负场必填（0/1/2）。"""
     parts = user_input.split()
     if not parts:
         return (None, None, None, None, None,
-                "请使用：战绩上传 [游戏ID] 职业 胜场 负场\n示例：战绩上传 小明 法师 12 0")
+                "请使用：战绩上传 [游戏ID] 职业 胜场 [负场]\n"
+                "胜场0-11时可省略负场（默认负场=3）\n"
+                "示例：战绩上传 法师 7    （胜场7时无需负场）\n"
+                "示例：战绩上传 小明 法师 12 0")
+
+    if len(parts) < 2:
+        return (None, None, None, None, None,
+                "请提供职业和胜场数。\n"
+                "胜场0-11时可省略负场（默认负场=3）\n"
+                "示例：战绩上传 法师 7\n"
+                "示例：战绩上传 法师 12 0")
 
     # ── Parse wins & losses from the right ──
-    if len(parts) < 3:
+    # Full format: ... 职业 胜场 负场  (last two tokens are digits)
+    # Short format: ... 职业 胜场       (only last token is digit, wins=0-11)
+    if len(parts) >= 3 and parts[-1].isdigit() and parts[-2].isdigit():
+        # Full format: both wins and losses provided
+        loss_str = parts[-1]
+        win_str = parts[-2]
+        losses = int(loss_str)
+        wins = int(win_str)
+        class_str = parts[-3]
+        game_id_str = " ".join(parts[:-3]).strip()
+    elif parts[-1].isdigit():
+        # Short format: only wins provided, losses defaults to 3
+        win_str = parts[-1]
+        wins = int(win_str)
+        class_str = parts[-2]
+        game_id_str = " ".join(parts[:-2]).strip()
+        if wins == 12:
+            return (None, None, None, None, None,
+                    "胜场12时必须提供负场（0/1/2）。\n示例：战绩上传 法师 12 0")
+        losses = 3
+    else:
         return (None, None, None, None, None,
-                "请提供职业、胜场数和负场数。\n示例：战绩上传 法师 12 0")
-
-    loss_str = parts[-1]
-    win_str = parts[-2]
-
-    if not win_str.isdigit():
-        return (None, None, None, None, None, f"胜场参数「{win_str}」不是有效数字。")
-    if not loss_str.isdigit():
-        return (None, None, None, None, None, f"负场参数「{loss_str}」不是有效数字。")
-
-    wins = int(win_str)
-    losses = int(loss_str)
+                f"无法解析胜场参数。\n"
+                f"格式：战绩上传 [游戏ID] 职业 胜场 [负场]")
 
     if wins < MIN_WINS or wins > MAX_WINS:
         return (None, None, None, None, None, f"胜场{wins}超出合法范围（{MIN_WINS}~{MAX_WINS}）。")
 
     if wins <= 11:
         if losses != 3:
-            return (None, None, None, None, None, f"胜场{wins}时负场必须为3，实际为{losses}。")
+            return (None, None, None, None, None,
+                    f"胜场{wins}时负场必须为3，实际为{losses}。\n"
+                    f"提示：胜场0-11时可省略负场，默认负场=3。")
     elif wins == 12:
         if losses not in (0, 1, 2):
             return (None, None, None, None, None, f"胜场12时负场只能为0/1/2，实际为{losses}。")
 
-    # ── Parse class (third token from right) ──
-    class_str = parts[-3]
+    # ── Resolve class ──
     class_name = _resolve_class(class_str)
     if class_name is None:
         return (None, None, None, None, None,
                 f"「{class_str}」不是合法的职业名称或别名。\n合法职业：{' / '.join(CLASS_NAMES)}")
-
-    # ── Parse game ID (everything before the last 3 tokens) ──
-    game_id_str = " ".join(parts[:-3]).strip()
 
     if not game_id_str:
         bindings = _get_bindings_for_qq(qq)

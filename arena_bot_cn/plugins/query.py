@@ -56,6 +56,20 @@ def _resolve_rank_player_input(token: str, qq: str) -> tuple[list[str], bool]:
     return [token], False
 
 
+def _extract_at_name(raw_message: Message) -> str | None:
+    """If the message contains an @mention, return the mentioned QQ's first binding name.
+    Returns None if no @mention or the mentioned user has no bindings."""
+    for seg in raw_message:
+        if seg.type == "at":
+            at_qq = seg.data.get("qq")
+            if at_qq:
+                bindings = _get_bindings_for_qq(at_qq)
+                if bindings:
+                    return bindings[0]["name"]
+            break
+    return None
+
+
 arena_cmd = on_command("查竞技场", aliases={"查询竞技场", "rank", "new"}, priority=10, block=True)
 old_arena_cmd = on_command("查旧竞技场", aliases={"查询旧竞技场", "legacy", "old"}, priority=10, block=True)
 career_cmd = on_command("生涯", aliases={"career"}, priority=10, block=True)
@@ -89,7 +103,7 @@ TUTORIAL_TEXT = """【竞技场查询 Bot 使用指引】
   账号绑定 删除 游戏ID       → 解除绑定
   注意：同一游戏ID只能被一个QQ绑定。
 
-战绩记录（战绩上传 / 战绩列表 / 战绩分布 / 分数查询 / 删除战绩 / 清空战绩）
+战绩记录（战绩上传 / 战绩列表 / 战绩分布 / 分数查询 / 删除战绩 / 清空战绩 / 与菜逼PK）
   战绩上传 [游戏ID] 职业 胜场 [负场] [职业 胜场 [负场] ...]
                             → 上传多轮战绩（单次最多30轮）
                             → 胜场0~11：负场可省略（默认=3）；胜场12：必须填写负场(0/1/2)
@@ -97,11 +111,13 @@ TUTORIAL_TEXT = """【竞技场查询 Bot 使用指引】
   战绩列表 [游戏ID]            → 查看任意玩家战绩记录（别名：盒战绩）
   战绩分布 [游戏ID]            → 职业分布柱状图
   分数查询 [游戏ID]            → 当前轮次、分数与均胜（别名：盒分数、盒）
+  与菜逼PK [玩家ID]            → 与敲可爱丨谜亚星比较战绩，计算超越所需胜场
   删除战绩 [游戏ID] 轮次…     → 删除指定轮次（仅限自己的绑定账号）
   清空战绩 [游戏ID]            → 清空全部战绩（仅限自己的绑定账号）
 
-提示：玩家名支持模糊匹配（绑定账号子串匹配 + 榜单全量搜索）；
-多ID以逗号分隔；数字参数默认为排名上限。"""
+提示：查竞技场 / 查旧竞技场 / 生涯 / 战绩列表 / 战绩分布 / 分数查询 / 与菜逼PK
+均支持 @某人 以对方首个绑定账号作为输入；玩家名支持模糊匹配（绑定账号子串匹配
++ 榜单全量搜索）；多ID以逗号分隔；数字参数默认为排名上限。"""
 
 ALL_NEW_SEASONS = ["1", "2", "3", "4", "5", "6", "7"]
 ALL_OLD_SEASONS = [str(i) for i in range(49, 57)]  # 49-56
@@ -587,7 +603,10 @@ async def query_arena(matcher, mode: str, season_id: str, limit: int, season_nam
 async def handle_arena_rank(event: MessageEvent, args: Message = CommandArg()):
     user_input = args.extract_plain_text().strip()
 
-    if not user_input:
+    at_name = _extract_at_name(args)
+    if at_name:
+        user_input = at_name
+    elif not user_input:
         bindings = _get_bindings_for_qq(event.get_user_id())
         if bindings:
             user_input = bindings[0]["name"]
@@ -603,6 +622,11 @@ async def handle_arena_rank(event: MessageEvent, args: Message = CommandArg()):
 @old_arena_cmd.handle()
 async def handle_old_arena_rank(event: MessageEvent, args: Message = CommandArg()):
     user_input = args.extract_plain_text().strip()
+
+    at_name = _extract_at_name(args)
+    if at_name:
+        user_input = at_name
+
     season_id, limit, season_name, player_names = parse_args(user_input, is_old=True)
 
     if not season_id:
@@ -615,7 +639,10 @@ async def handle_old_arena_rank(event: MessageEvent, args: Message = CommandArg(
 async def handle_career(event: MessageEvent, args: Message = CommandArg()):
     user_input = args.extract_plain_text().strip()
 
-    if not user_input:
+    at_name = _extract_at_name(args)
+    if at_name:
+        user_input = at_name
+    elif not user_input:
         bindings = _get_bindings_for_qq(event.get_user_id())
         if bindings:
             user_input = bindings[0]["name"]

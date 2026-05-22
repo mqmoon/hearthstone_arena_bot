@@ -64,6 +64,7 @@ CLASS_ALIASES: dict[str, str] = {
     "战": "战士",
     "dly": "德鲁伊",
     "德": "德鲁伊",
+    "小德": "德鲁伊",
 }
 
 
@@ -83,6 +84,7 @@ delete_records_cmd = on_command("删除战绩", aliases={"deleterecord", "delete
 clear_records_cmd = on_command("清空战绩", aliases={"clearrecords"}, priority=10, block=True)
 class_dist_cmd = on_command("战绩分布", aliases={"classdist"}, priority=10, block=True)
 score_query_cmd = on_command("分数查询", aliases={"score", "盒分数", "盒"}, priority=10, block=True)
+pk_cmd = on_command("与菜逼PK", aliases={"pk"}, priority=10, block=True)
 
 
 # ============================================================
@@ -273,9 +275,22 @@ def _resolve_game_id(user_input: str, qq: str) -> tuple[str | None, str | None, 
     return (game_id_lower, binding["name"], None)
 
 
-def _resolve_game_id_lookup(user_input: str, qq: str) -> tuple[str | None, str | None, str | None]:
+def _resolve_game_id_lookup(user_input: str, qq: str, raw_message: Message | None = None) -> tuple[str | None, str | None, str | None]:
     """Resolve game_id for lookup/query commands. No binding restriction when game_id is provided.
+    Supports @mention: if the message contains an at segment, use the mentioned QQ's first binding.
     Returns (game_id_lower, display_name, error_message)."""
+    # Check for @mention first — extract the first at segment's QQ
+    if raw_message is not None:
+        for seg in raw_message:
+            if seg.type == "at":
+                at_qq = seg.data.get("qq")
+                if at_qq:
+                    bindings = _get_bindings_for_qq(at_qq)
+                    if not bindings:
+                        return (None, None, f"被@的用户还没有绑定任何游戏账号，请先让对方使用「账号绑定 游戏ID」进行绑定。")
+                    return (bindings[0]["game_id"], bindings[0]["name"], None)
+                break
+
     user_input = user_input.strip()
 
     if not user_input:
@@ -369,8 +384,8 @@ async def _handle_upload(matcher, qq: str, user_input: str):
     )
 
 
-async def _handle_record_list(matcher, qq: str, user_input: str):
-    game_id_lower, display_name, error = _resolve_game_id_lookup(user_input, qq)
+async def _handle_record_list(matcher, qq: str, user_input: str, raw_message: Message | None = None):
+    game_id_lower, display_name, error = _resolve_game_id_lookup(user_input, qq, raw_message)
     if error:
         await matcher.finish(error)
         return
@@ -527,12 +542,12 @@ def _generate_distribution_chart(rounds: list[dict], game_name: str, score: floa
     return Path(tmp.name)
 
 
-async def _handle_class_distribution(matcher, qq: str, user_input: str):
+async def _handle_class_distribution(matcher, qq: str, user_input: str, raw_message: Message | None = None):
     if CHART_FONT_PATH is None:
         await matcher.finish("系统未找到中文字体，无法生成柱状图。请联系管理员安装中文字体。")
         return
 
-    game_id_lower, display_name, error = _resolve_game_id_lookup(user_input, qq)
+    game_id_lower, display_name, error = _resolve_game_id_lookup(user_input, qq, raw_message)
     if error:
         await matcher.finish(error)
         return
@@ -556,8 +571,8 @@ async def _handle_class_distribution(matcher, qq: str, user_input: str):
     await matcher.finish(MessageSegment.image(file=chart_path))
 
 
-async def _handle_score_query(matcher, qq: str, user_input: str):
-    game_id_lower, display_name, error = _resolve_game_id_lookup(user_input, qq)
+async def _handle_score_query(matcher, qq: str, user_input: str, raw_message: Message | None = None):
+    game_id_lower, display_name, error = _resolve_game_id_lookup(user_input, qq, raw_message)
     if error:
         await matcher.finish(error)
         return
@@ -576,6 +591,53 @@ async def _handle_score_query(matcher, qq: str, user_input: str):
         f"当前轮次: {total_rounds}\n"
         f"当前分数: {latest['score']}  均胜: {latest.get('avg_wins', '-')}"
     )
+
+
+PK_BENCHMARK = "敲可爱丨谜亚星"
+
+
+async def _handle_pk(matcher, qq: str, user_input: str, raw_message: Message | None = None):
+    game_id_lower, display_name, error = _resolve_game_id_lookup(user_input, qq, raw_message)
+    if error:
+        await matcher.finish(error)
+        return
+
+    data = _load_records()
+
+    bench_entry = data.get("by_game_id", {}).get(PK_BENCHMARK.lower())
+    if bench_entry is None or not bench_entry.get("rounds"):
+        await matcher.finish(f"菜逼【{PK_BENCHMARK}】还没有战绩记录，PK无法进行。")
+        return
+
+    player_entry = data.get("by_game_id", {}).get(game_id_lower)
+    if player_entry is None or not player_entry.get("rounds"):
+        await matcher.finish(f"【{display_name}】还没有战绩记录，PK无法进行。")
+        return
+
+    b_rounds = len(bench_entry["rounds"])
+    b_latest = bench_entry["rounds"][-1]
+    b_score = b_latest["score"]
+    b_avg = b_latest.get("avg_wins", "-")
+
+    p_rounds = len(player_entry["rounds"])
+    p_latest = player_entry["rounds"][-1]
+    p_score = p_latest["score"]
+    p_avg = p_latest.get("avg_wins", "-")
+
+    lines = [
+        "【与菜逼PK】",
+        f"菜逼【{PK_BENCHMARK}】: {b_rounds}轮  分数: {b_score}  均胜: {b_avg}",
+        f"【{display_name}】: {p_rounds}轮  分数: {p_score}  均胜: {p_avg}",
+    ]
+
+    if p_score > b_score:
+        lines.append("你已经击败了菜逼！")
+    else:
+        needed = (b_score - p_score * EMA_DECAY) / 100
+        min_wins = int(needed) + 1 if needed >= 0 else 1
+        lines.append(f"只要下一轮取得{min_wins}胜及以上，即可击败菜逼！")
+
+    await matcher.finish("\n".join(lines))
 
 
 # ============================================================
@@ -600,7 +662,7 @@ async def handle_record_list(event: MessageEvent, args: Message = CommandArg()):
     user_input = args.extract_plain_text().strip()
     qq = event.get_user_id()
     try:
-        await _handle_record_list(record_list_cmd, qq, user_input)
+        await _handle_record_list(record_list_cmd, qq, user_input, args)
     except FinishedException:
         raise
     except Exception as e:
@@ -639,7 +701,7 @@ async def handle_class_distribution(event: MessageEvent, args: Message = Command
     user_input = args.extract_plain_text().strip()
     qq = event.get_user_id()
     try:
-        await _handle_class_distribution(class_dist_cmd, qq, user_input)
+        await _handle_class_distribution(class_dist_cmd, qq, user_input, args)
     except FinishedException:
         raise
     except Exception as e:
@@ -652,9 +714,22 @@ async def handle_score_query(event: MessageEvent, args: Message = CommandArg()):
     user_input = args.extract_plain_text().strip()
     qq = event.get_user_id()
     try:
-        await _handle_score_query(score_query_cmd, qq, user_input)
+        await _handle_score_query(score_query_cmd, qq, user_input, args)
     except FinishedException:
         raise
     except Exception as e:
         logger.error(f"分数查询操作报错: {e}")
         await score_query_cmd.finish("分数查询发生未知错误，请联系管理员。")
+
+
+@pk_cmd.handle()
+async def handle_pk(event: MessageEvent, args: Message = CommandArg()):
+    user_input = args.extract_plain_text().strip()
+    qq = event.get_user_id()
+    try:
+        await _handle_pk(pk_cmd, qq, user_input, args)
+    except FinishedException:
+        raise
+    except Exception as e:
+        logger.error(f"与菜逼PK操作报错: {e}")
+        await pk_cmd.finish("与菜逼PK发生未知错误，请联系管理员。")

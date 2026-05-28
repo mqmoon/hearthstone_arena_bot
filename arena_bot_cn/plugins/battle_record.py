@@ -85,6 +85,7 @@ clear_records_cmd = on_command("清空战绩", aliases={"clearrecords"}, priorit
 class_dist_cmd = on_command("战绩分布", aliases={"classdist"}, priority=10, block=True)
 score_query_cmd = on_command("分数查询", aliases={"score", "盒分数"}, priority=10, block=True)
 pk_cmd = on_command("与菜逼PK", aliases={"pk"}, priority=10, block=True)
+win_dist_cmd = on_command("胜场分布", aliases={"windist"}, priority=10, block=True)
 
 
 # ============================================================
@@ -542,6 +543,50 @@ def _generate_distribution_chart(rounds: list[dict], game_name: str, score: floa
     return Path(tmp.name)
 
 
+def _generate_win_distribution_chart(rounds: list[dict], game_name: str, score: float, avg_wins: float) -> Path:
+    """Generate win-count distribution bar chart. Returns path to saved PNG."""
+    win_counts = {i: 0 for i in range(0, 13)}
+    for r in rounds:
+        w = r["wins"]
+        if 0 <= w <= 12:
+            win_counts[w] += 1
+
+    labels = [
+        f"{w}胜\n{win_counts[w]}次" if win_counts[w] > 0 else f"{w}胜"
+        for w in range(0, 13)
+    ]
+    values = [win_counts[w] for w in range(0, 13)]
+
+    font_prop = font_manager.FontProperties(fname=CHART_FONT_PATH, size=10)
+    title_font = font_manager.FontProperties(fname=CHART_FONT_PATH, size=13)
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    bars = ax.bar(range(13), values, color="#4C72B0", width=0.6)
+    ax.set_xticks(range(13))
+    ax.set_xticklabels(labels, fontproperties=font_prop)
+    ax.set_ylabel("次数", fontproperties=font_prop)
+    ymax = max(values) + 1 if values and max(values) > 0 else 5
+    ax.set_ylim(0, ymax)
+
+    for bar, val in zip(bars, values):
+        if val > 0:
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.2,
+                    str(val), ha="center", va="bottom", fontproperties=font_prop)
+
+    ax.set_title(
+        f"{game_name}  胜场分布\n分数: {score}  均胜: {avg_wins}",
+        fontproperties=title_font,
+        pad=18,
+    )
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    fig.savefig(tmp.name, dpi=150, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return Path(tmp.name)
+
+
 async def _handle_class_distribution(matcher, qq: str, user_input: str, raw_message: Message | None = None):
     if CHART_FONT_PATH is None:
         await matcher.finish("系统未找到中文字体，无法生成柱状图。请联系管理员安装中文字体。")
@@ -566,6 +611,35 @@ async def _handle_class_distribution(matcher, qq: str, user_input: str, raw_mess
 
     chart_path = await asyncio.to_thread(
         _generate_distribution_chart, rounds, display_name, score, avg
+    )
+
+    await matcher.finish(MessageSegment.image(file=chart_path))
+
+
+async def _handle_win_distribution(matcher, qq: str, user_input: str, raw_message: Message | None = None):
+    if CHART_FONT_PATH is None:
+        await matcher.finish("系统未找到中文字体，无法生成柱状图。请联系管理员安装中文字体。")
+        return
+
+    game_id_lower, display_name, error = _resolve_game_id_lookup(user_input, qq, raw_message)
+    if error:
+        await matcher.finish(error)
+        return
+
+    data = _load_records()
+    entry = data.get("by_game_id", {}).get(game_id_lower)
+
+    if entry is None or not entry.get("rounds"):
+        await matcher.finish(f"游戏账号【{display_name}】还没有战绩记录。")
+        return
+
+    rounds = entry["rounds"]
+    latest = rounds[-1]
+    score = latest["score"]
+    avg = latest.get("avg_wins", 0)
+
+    chart_path = await asyncio.to_thread(
+        _generate_win_distribution_chart, rounds, display_name, score, avg
     )
 
     await matcher.finish(MessageSegment.image(file=chart_path))
@@ -733,3 +807,16 @@ async def handle_pk(event: MessageEvent, args: Message = CommandArg()):
     except Exception as e:
         logger.error(f"与菜逼PK操作报错: {e}")
         await pk_cmd.finish("与菜逼PK发生未知错误，请联系管理员。")
+
+
+@win_dist_cmd.handle()
+async def handle_win_distribution(event: MessageEvent, args: Message = CommandArg()):
+    user_input = args.extract_plain_text().strip()
+    qq = event.get_user_id()
+    try:
+        await _handle_win_distribution(win_dist_cmd, qq, user_input, args)
+    except FinishedException:
+        raise
+    except Exception as e:
+        logger.error(f"胜场分布操作报错: {e}")
+        await win_dist_cmd.finish("胜场分布生成发生未知错误，请联系管理员。")

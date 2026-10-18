@@ -457,8 +457,17 @@ def _career_stats_lines(records: list[dict]) -> list[str]:
         elif pos <= 100:
             ranges["51-100"] += 1
 
-    lines = [f"第{pos}名：{count}次" for pos, count in top10.items() if count]
-    lines.extend(f"第{label}名：{count}次" for label, count in ranges.items() if count)
+    top10_emoji = {1: "🏆", 2: "🥈", 3: "🥉"}
+    range_emoji = {"11-25": "🔥", "26-50": "💪", "51-100": "🌱"}
+
+    lines = [
+        f"{top10_emoji.get(pos, '⭐')} 第{pos}名：{count}次"
+        for pos, count in top10.items() if count
+    ]
+    lines.extend(
+        f"{range_emoji[label]} 第{label}名：{count}次"
+        for label, count in ranges.items() if count
+    )
     return lines
 
 

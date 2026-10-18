@@ -1161,17 +1161,30 @@ class TestCareerStats:
             {"position": 100},
         ]
         lines = q._career_stats_lines(records)
-        assert lines == ["第10名：1次", "第11-25名：1次", "第26-50名：1次", "第51-100名：1次"]
+        assert lines == [
+            "⭐ 第10名：1次",
+            "🔥 第11-25名：1次",
+            "💪 第26-50名：1次",
+            "🌱 第51-100名：1次",
+        ]
 
     def test_top10_individual_ranks(self):
         records = [{"position": 1}, {"position": 1}, {"position": 3}, {"position": 10}]
         lines = q._career_stats_lines(records)
-        assert lines == ["第1名：2次", "第3名：1次", "第10名：1次"]
+        assert lines == [
+            "🏆 第1名：2次",
+            "🥉 第3名：1次",
+            "⭐ 第10名：1次",
+        ]
 
     def test_range_boundaries(self):
         records = [{"position": p} for p in (11, 25, 26, 50, 51, 100)]
         lines = q._career_stats_lines(records)
-        assert lines == ["第11-25名：2次", "第26-50名：2次", "第51-100名：2次"]
+        assert lines == [
+            "🔥 第11-25名：2次",
+            "💪 第26-50名：2次",
+            "🌱 第51-100名：2次",
+        ]
 
     def test_outside_top100_ignored(self):
         records = [{"position": 101}, {"position": 500}, {"position": 0}]
@@ -1197,8 +1210,8 @@ class TestQueryCareerStats:
 
         reply = matcher.finish.call_args[0][0]
         assert "【名次统计】" in reply
-        assert "第10名：1次" in reply
-        assert "第11-25名：1次" in reply
+        assert "⭐ 第10名：1次" in reply
+        assert "🔥 第11-25名：1次" in reply
 
     @pytest.mark.asyncio
     async def test_career_without_top100_stats(self):

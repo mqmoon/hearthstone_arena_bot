@@ -84,8 +84,8 @@ delete_records_cmd = on_command("删除战绩", aliases={"deleterecord", "delete
 clear_records_cmd = on_command("清空战绩", aliases={"clearrecords"}, priority=10, block=True)
 class_dist_cmd = on_command("战绩分布", aliases={"classdist"}, priority=10, block=True)
 score_query_cmd = on_command("分数查询", aliases={"score", "盒分数"}, priority=10, block=True)
-pk_cmd = on_command("与菜逼PK", aliases={"pk"}, priority=10, block=True)
-any_pk_cmd = on_command("PK", aliases={"任意PK", "anypk"}, priority=10, block=True)
+pk_cmd = on_command("与菜逼PK", priority=10, block=True)
+any_pk_cmd = on_command("PK", aliases={"pk", "任意PK", "anypk"}, priority=10, block=True)
 win_dist_cmd = on_command("胜场分布", aliases={"windist"}, priority=10, block=True)
 
 

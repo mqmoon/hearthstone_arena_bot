@@ -458,7 +458,7 @@ def _career_stats_lines(records: list[dict]) -> list[str]:
             ranges["51-100"] += 1
 
     lines = [f"第{pos}名：{count}次" for pos, count in top10.items() if count]
-    lines.extend(f"{label}名：{count}次" for label, count in ranges.items() if count)
+    lines.extend(f"第{label}名：{count}次" for label, count in ranges.items() if count)
     return lines
 
 
@@ -512,7 +512,7 @@ async def query_career(matcher, player_id: str):
 
     stats = _career_stats_lines(records)
     lines.append("")
-    lines.append("【前100名次达成统计】")
+    lines.append("【名次统计】")
     lines.extend(stats if stats else ["暂无前100名记录"])
 
     reply_text = "\n".join(lines)

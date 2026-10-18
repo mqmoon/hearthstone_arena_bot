@@ -993,3 +993,14 @@ class TestHandleAnyPk:
         await br._handle_any_pk(self.matcher, "111", "a A")
         reply = self.matcher.finish.call_args[0][0]
         assert "同一个账号" in reply
+
+    @pytest.mark.asyncio
+    async def test_lowercase_pk_goes_to_any_pk(self):
+        self._upload("a", [5])
+        self._upload("b", [10])
+        # "pk A B" is now registered on the PK command, not 与菜逼PK.
+        await br._handle_any_pk(self.matcher, "111", "a b")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "【PK · 最新赛季】" in reply
+        assert "目标【b】" in reply
+        assert "6胜及以上" in reply

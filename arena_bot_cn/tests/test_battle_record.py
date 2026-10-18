@@ -902,3 +902,94 @@ class TestIntegration:
         bindings = b._get_bindings_for_qq("111")
         assert len(bindings) == 1
         assert bindings[0]["name"] == "小明"
+
+
+# ============================================================
+# Any-player PK (PK A B / PK B)
+# ============================================================
+
+class TestHandleAnyPk:
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        monkeypatch.setattr(b, "DATA_DIR", self.tmpdir)
+        monkeypatch.setattr(br, "DATA_DIR", self.tmpdir)
+        b._bindings_cache = None
+        br._records_cache = None
+        self.matcher = AsyncMock()
+        yield
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        b._bindings_cache = None
+        br._records_cache = None
+
+    def _bind(self, game_id, qq="111", name=None):
+        data = b._load_bindings()
+        data.setdefault("by_game_id", {})[game_id.lower()] = {
+            "qq": qq, "name": name or game_id,
+        }
+        b._save_bindings(data)
+
+    def _upload(self, game_id, wins_list):
+        data = br._load_records()
+        entry = data.setdefault("by_game_id", {}).setdefault(game_id.lower(), {"rounds": []})
+        for w in wins_list:
+            entry["rounds"].append({"wins": w, "losses": 3, "class": "法师", "score": 0})
+        br._recalc_scores(entry["rounds"])
+        br._save_records(data)
+
+    @pytest.mark.asyncio
+    async def test_a_chasing_b(self):
+        self._upload("a", [5])
+        self._upload("b", [10])
+        await br._handle_any_pk(self.matcher, "111", "a b")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "【PK · 最新赛季】" in reply
+        assert "目标【b】" in reply
+        assert "挑战【a】" in reply
+        # needed = (1000 - 500*0.9)/100 = 5.5 -> 6 wins
+        assert "6胜及以上" in reply
+
+    @pytest.mark.asyncio
+    async def test_a_already_ahead(self):
+        self._upload("a", [10])
+        self._upload("b", [5])
+        await br._handle_any_pk(self.matcher, "111", "a b")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "【a】已经战胜了【b】" in reply
+
+    @pytest.mark.asyncio
+    async def test_single_arg_uses_first_binding_as_a(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        self._upload("xiaoming", [5])
+        self._upload("b", [10])
+        await br._handle_any_pk(self.matcher, "111", "b")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "挑战【小明】" in reply
+        assert "目标【b】" in reply
+
+    @pytest.mark.asyncio
+    async def test_single_arg_without_binding(self):
+        await br._handle_any_pk(self.matcher, "111", "b")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "还没有绑定任何游戏账号" in reply
+
+    @pytest.mark.asyncio
+    async def test_missing_record(self):
+        self._upload("a", [5])
+        await br._handle_any_pk(self.matcher, "111", "a b")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "【b】还没有战绩记录" in reply
+
+    @pytest.mark.asyncio
+    async def test_too_many_args(self):
+        await br._handle_any_pk(self.matcher, "111", "a b c")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "PK 用法" in reply
+
+    @pytest.mark.asyncio
+    async def test_same_account(self):
+        self._upload("a", [5])
+        await br._handle_any_pk(self.matcher, "111", "a A")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "同一个账号" in reply

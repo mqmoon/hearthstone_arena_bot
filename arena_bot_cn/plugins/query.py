@@ -78,7 +78,7 @@ cutoff_cmd = on_command("分数线", aliases={"cutoff", "cutoffs"}, priority=10,
 
 TUTORIAL_TEXT = """【竞技场查询 Bot 使用指引】
 
-地下竞技场（查竞技场 / rank / new）  赛季：1~7，别名：最新、上赛季
+地下竞技场（查竞技场 / rank / new）  赛季：1~10，别名：最新、上赛季
   查竞技场                   → 最新赛季前10名
   查竞技场 6                → 第6赛季前10名
   查竞技场 100              → 最新赛季前100名
@@ -95,7 +95,7 @@ TUTORIAL_TEXT = """【竞技场查询 Bot 使用指引】
   分数线 5                  → 第5赛季分数线
 
 玩家生涯（生涯 / career）
-  生涯 玩家名               → 该玩家所有赛季排名记录
+  生涯 玩家名               → 所有赛季排名记录 + 前100名次达成统计
 
 账号绑定（账号绑定 / bind）
   账号绑定                   → 列出已绑定账号
@@ -103,7 +103,7 @@ TUTORIAL_TEXT = """【竞技场查询 Bot 使用指引】
   账号绑定 删除 游戏ID       → 解除绑定
   注意：同一游戏ID只能被一个QQ绑定。
 
-战绩记录（战绩上传 / 战绩列表 / 战绩分布 / 胜场分布 / 分数查询 / 与菜逼PK / 删除 / 清空）
+战绩记录（战绩上传 / 战绩列表 / 战绩分布 / 胜场分布 / 分数查询 / 与菜逼PK / PK / 删除 / 清空）
   战绩上传 [游戏ID] 职业 胜场 [负场] [职业 胜场 [负场] ...]
                             → 上传多轮战绩（单次最多30轮）
                             → 胜场0~11：负场可省略（默认=3）；胜场12：必须填写负场(0/1/2)
@@ -113,6 +113,8 @@ TUTORIAL_TEXT = """【竞技场查询 Bot 使用指引】
   胜场分布 [游戏ID]            → 胜场数（0~12）分布柱状图
   分数查询 [游戏ID]            → 当前轮次、分数与均胜（别名：盒分数）
   与菜逼PK [玩家ID]            → 与敲可爱丨谜亚星比较战绩，计算超越所需胜场
+  PK A B                    → A追赶B的最新赛季成绩（A、B为游戏ID）
+  PK B                      → 以你的第一个绑定账号作为A，追赶B
   删除战绩 [游戏ID] 轮次…     → 删除指定轮次（仅限自己的绑定账号）
   清空战绩 [游戏ID]            → 清空全部战绩（仅限自己的绑定账号）
 
@@ -120,7 +122,7 @@ TUTORIAL_TEXT = """【竞技场查询 Bot 使用指引】
 / 与菜逼PK 均支持 @某人 以对方首个绑定账号作为输入；玩家名支持模糊匹配（绑定
 账号子串匹配 + 榜单全量搜索）；多ID以逗号分隔；数字参数默认为排名上限。"""
 
-ALL_NEW_SEASONS = ["1", "2", "3", "4", "5", "6", "7"]
+ALL_NEW_SEASONS = [str(i) for i in range(1, 11)]  # 1-10
 ALL_OLD_SEASONS = [str(i) for i in range(49, 57)]  # 49-56
 
 _latest_new = max(ALL_NEW_SEASONS, key=int)
@@ -434,8 +436,34 @@ def _season_display(season_name: str) -> str:
     return season_name
 
 
+def _career_stats_lines(records: list[dict]) -> list[str]:
+    """统计前100各名次区间的达成次数。
+
+    第1~10名按独立名次统计；11-25、26-50、51-100按区间统计。
+    """
+    top10 = {pos: 0 for pos in range(1, 11)}
+    ranges = {"11-25": 0, "26-50": 0, "51-100": 0}
+
+    for r in records:
+        pos = r.get("position", 0)
+        if not isinstance(pos, int) or pos < 1:
+            continue
+        if pos <= 10:
+            top10[pos] += 1
+        elif pos <= 25:
+            ranges["11-25"] += 1
+        elif pos <= 50:
+            ranges["26-50"] += 1
+        elif pos <= 100:
+            ranges["51-100"] += 1
+
+    lines = [f"第{pos}名：{count}次" for pos, count in top10.items() if count]
+    lines.extend(f"{label}名：{count}次" for label, count in ranges.items() if count)
+    return lines
+
+
 async def query_career(matcher, player_id: str):
-    # 并发获取所有赛季数据：旧版 49-56 + 新版 1-6
+    # 并发获取所有赛季数据：旧版 49-56 + 新版 1-10
     old_tasks = [_get_cached_season_all("arena", sid) for sid in ALL_OLD_SEASONS]
     new_tasks = [_get_cached_season_all("undergroundarena", sid) for sid in ALL_NEW_SEASONS]
 
@@ -469,7 +497,7 @@ async def query_career(matcher, player_id: str):
     if not records:
         await matcher.finish(f"未找到玩家【{player_id}】的榜单记录。")
 
-    # 按时间排序（从旧到新）：旧版 49-56 -> 新版 1-6
+    # 按时间排序（从旧到新）：旧版 49-56 -> 新版 1-10
     def sort_key(r: dict) -> tuple:
         if r["mode"] == "旧版":
             return (0, int(r["season"]))
@@ -481,6 +509,11 @@ async def query_career(matcher, player_id: str):
     for r in records:
         prefix = _rank_prefix(r["position"])
         lines.append(f"{prefix}{r['mode']} S{r['season']} - 第{r['position']}名 - {r['score']}")
+
+    stats = _career_stats_lines(records)
+    lines.append("")
+    lines.append("【前100名次达成统计】")
+    lines.extend(stats if stats else ["暂无前100名记录"])
 
     reply_text = "\n".join(lines)
     await matcher.finish(reply_text)

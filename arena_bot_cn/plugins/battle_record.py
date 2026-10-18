@@ -85,6 +85,7 @@ clear_records_cmd = on_command("清空战绩", aliases={"clearrecords"}, priorit
 class_dist_cmd = on_command("战绩分布", aliases={"classdist"}, priority=10, block=True)
 score_query_cmd = on_command("分数查询", aliases={"score", "盒分数"}, priority=10, block=True)
 pk_cmd = on_command("与菜逼PK", aliases={"pk"}, priority=10, block=True)
+any_pk_cmd = on_command("PK", aliases={"任意PK", "anypk"}, priority=10, block=True)
 win_dist_cmd = on_command("胜场分布", aliases={"windist"}, priority=10, block=True)
 
 
@@ -714,6 +715,79 @@ async def _handle_pk(matcher, qq: str, user_input: str, raw_message: Message | N
     await matcher.finish("\n".join(lines))
 
 
+def _resolve_pk_player(token: str) -> tuple[str, str]:
+    """Resolve a PK participant token to (game_id_lower, display_name)."""
+    token = token.strip()
+    game_id_lower = token.lower()
+    binding = _find_binding_by_game_id(game_id_lower)
+    display_name = binding.get("name", token) if binding else token
+    return game_id_lower, display_name
+
+
+async def _handle_any_pk(matcher, qq: str, user_input: str):
+    """PK A B / PK B — 以 A 追赶 B 的视角比较双方最新赛季（最新一轮）成绩。"""
+    parts = user_input.split()
+    usage = (
+        "PK 用法：PK A B（A追赶B的最新赛季成绩）\n"
+        "或：PK B（以你的第一个绑定账号作为A）"
+    )
+    if not parts or len(parts) > 2:
+        await matcher.finish(usage)
+        return
+
+    if len(parts) == 1:
+        bindings = _get_bindings_for_qq(qq)
+        if not bindings:
+            await matcher.finish("你还没有绑定任何游戏账号，请先使用「账号绑定 游戏ID」进行绑定。")
+            return
+        a_id, a_name = bindings[0]["game_id"], bindings[0]["name"]
+        b_id, b_name = _resolve_pk_player(parts[0])
+    else:
+        a_id, a_name = _resolve_pk_player(parts[0])
+        b_id, b_name = _resolve_pk_player(parts[1])
+
+    if a_id == b_id:
+        await matcher.finish(f"【{a_name}】与【{b_name}】是同一个账号，无需PK。")
+        return
+
+    entries = _load_records().get("by_game_id", {})
+
+    a_entry = entries.get(a_id)
+    if a_entry is None or not a_entry.get("rounds"):
+        await matcher.finish(f"【{a_name}】还没有战绩记录，PK无法进行。")
+        return
+
+    b_entry = entries.get(b_id)
+    if b_entry is None or not b_entry.get("rounds"):
+        await matcher.finish(f"【{b_name}】还没有战绩记录，PK无法进行。")
+        return
+
+    a_rounds = a_entry["rounds"]
+    b_rounds = b_entry["rounds"]
+    a_latest = a_rounds[-1]
+    b_latest = b_rounds[-1]
+    a_score = a_latest.get("score", 0)
+    b_score = b_latest.get("score", 0)
+
+    lines = [
+        "【PK · 最新赛季】",
+        f"目标【{b_name}】: {len(b_rounds)}轮  分数: {b_score}  均胜: {b_latest.get('avg_wins', '-')}",
+        f"挑战【{a_name}】: {len(a_rounds)}轮  分数: {a_score}  均胜: {a_latest.get('avg_wins', '-')}",
+    ]
+
+    if a_score > b_score:
+        lines.append(f"【{a_name}】已经战胜了【{b_name}】！")
+    else:
+        needed = (b_score - a_score * EMA_DECAY) / 100
+        min_wins = int(needed) + 1 if needed >= 0 else 1
+        if min_wins > MAX_WINS:
+            lines.append(f"差距较大，下一轮即使取得{MAX_WINS}胜也无法击败【{b_name}】。")
+        else:
+            lines.append(f"【{a_name}】只要下一轮取得{min_wins}胜及以上，即可击败【{b_name}】！")
+
+    await matcher.finish("\n".join(lines))
+
+
 # ============================================================
 # Command registration
 # ============================================================
@@ -807,6 +881,19 @@ async def handle_pk(event: MessageEvent, args: Message = CommandArg()):
     except Exception as e:
         logger.error(f"与菜逼PK操作报错: {e}")
         await pk_cmd.finish("与菜逼PK发生未知错误，请联系管理员。")
+
+
+@any_pk_cmd.handle()
+async def handle_any_pk(event: MessageEvent, args: Message = CommandArg()):
+    user_input = args.extract_plain_text().strip()
+    qq = event.get_user_id()
+    try:
+        await _handle_any_pk(any_pk_cmd, qq, user_input)
+    except FinishedException:
+        raise
+    except Exception as e:
+        logger.error(f"PK操作报错: {e}")
+        await any_pk_cmd.finish("PK发生未知错误，请联系管理员。")
 
 
 @win_dist_cmd.handle()

@@ -20,7 +20,7 @@ class TestParseArgsNew:
 
     def test_empty_input(self):
         sid, limit, name, player_names = q.parse_args("")
-        assert sid == "7"
+        assert sid == "10"
         assert limit == 10
         assert name == "最新赛季"
         assert player_names == []
@@ -44,7 +44,7 @@ class TestParseArgsNew:
 
     def test_single_digit_out_of_range_is_limit(self):
         sid, limit, name, player_names = q.parse_args("100")
-        assert sid == "7"
+        assert sid == "10"
         assert limit == 100
         assert name == "最新赛季"
         assert player_names == []
@@ -55,26 +55,26 @@ class TestParseArgsNew:
 
     def test_single_alias_zuixin(self):
         sid, limit, name, player_names = q.parse_args("最新")
-        assert sid == "7"
+        assert sid == "10"
         assert limit == 10
         assert name == "最新"
         assert player_names == []
 
     def test_single_alias_shangsaiji(self):
         sid, limit, name, player_names = q.parse_args("上赛季")
-        assert sid == "6"
+        assert sid == "9"
         assert limit == 10
         assert name == "上赛季"
         assert player_names == []
 
     def test_single_alias_default(self):
         sid, limit, name, player_names = q.parse_args("默认")
-        assert sid == "7"
+        assert sid == "10"
         assert limit == 10
 
     def test_single_non_alias_is_player_name(self):
         sid, limit, name, player_names = q.parse_args("小明")
-        assert sid == "7"
+        assert sid == "10"
         assert limit == 10
         assert name == "最新赛季"
         assert player_names == ["小明"]
@@ -88,7 +88,7 @@ class TestParseArgsNew:
 
     def test_season_alias_with_limit(self):
         sid, limit, name, player_names = q.parse_args("最新 100")
-        assert sid == "7"
+        assert sid == "10"
         assert limit == 100
         assert name == "最新"
         assert player_names == []
@@ -102,7 +102,7 @@ class TestParseArgsNew:
 
     def test_season_alias_with_player_name(self):
         sid, limit, name, player_names = q.parse_args("上赛季 小红")
-        assert sid == "6"
+        assert sid == "9"
         assert limit == 10
         assert name == "上赛季"
         assert player_names == ["小红"]
@@ -115,7 +115,7 @@ class TestParseArgsNew:
     def test_digit_0_as_season_not_valid(self):
         """0 is not a valid season ID for new arena"""
         sid, limit, name, player_names = q.parse_args("0")
-        assert sid == "7"
+        assert sid == "10"
         assert limit == 1  # clamped from 0
 
 
@@ -437,10 +437,10 @@ class TestSearchAllPlayersInSeason:
 
 class TestResolveCacheTTL:
     def test_latest_underground_has_ttl(self):
-        assert q._resolve_cache_ttl("undergroundarena", "7") == q.CACHE_TTL
+        assert q._resolve_cache_ttl("undergroundarena", "10") == q.CACHE_TTL
 
     def test_old_underground_no_ttl(self):
-        assert q._resolve_cache_ttl("undergroundarena", "6") is None
+        assert q._resolve_cache_ttl("undergroundarena", "9") is None
         assert q._resolve_cache_ttl("undergroundarena", "1") is None
 
     def test_old_arena_no_ttl(self):
@@ -814,9 +814,9 @@ class TestGetCachedSeasonAll:
 
 class TestSeasonAliases:
     def test_new_season_aliases(self):
-        assert q.SEASON_ALIASES["最新"] == "7"
-        assert q.SEASON_ALIASES["上赛季"] == "6"
-        assert q.SEASON_ALIASES["默认"] == "7"
+        assert q.SEASON_ALIASES["最新"] == "10"
+        assert q.SEASON_ALIASES["上赛季"] == "9"
+        assert q.SEASON_ALIASES["默认"] == "10"
 
     def test_old_season_aliases(self):
         assert q.OLD_SEASON_ALIASES["最新"] == "56"
@@ -824,7 +824,8 @@ class TestSeasonAliases:
         assert q.OLD_SEASON_ALIASES["默认"] == "56"
 
     def test_all_new_seasons(self):
-        assert q.ALL_NEW_SEASONS == ["1", "2", "3", "4", "5", "6", "7"]
+        assert q.ALL_NEW_SEASONS == [str(i) for i in range(1, 11)]
+        assert len(q.ALL_NEW_SEASONS) == 10
 
     def test_all_old_seasons(self):
         assert q.ALL_OLD_SEASONS == [str(i) for i in range(49, 57)]
@@ -1145,3 +1146,70 @@ class TestQueryArenaMultiPlayer:
         await q.query_arena(matcher, "undergroundarena", "6", 10, "6", [], "111")
         reply = matcher.finish.call_args[0][0]
         assert "P1" in reply
+
+
+# ============================================================
+# 生涯 — 前100名次达成统计
+# ============================================================
+
+class TestCareerStats:
+    def test_example_from_spec(self):
+        records = [
+            {"position": 10},
+            {"position": 25},
+            {"position": 50},
+            {"position": 100},
+        ]
+        lines = q._career_stats_lines(records)
+        assert lines == ["第10名：1次", "11-25名：1次", "26-50名：1次", "51-100名：1次"]
+
+    def test_top10_individual_ranks(self):
+        records = [{"position": 1}, {"position": 1}, {"position": 3}, {"position": 10}]
+        lines = q._career_stats_lines(records)
+        assert lines == ["第1名：2次", "第3名：1次", "第10名：1次"]
+
+    def test_range_boundaries(self):
+        records = [{"position": p} for p in (11, 25, 26, 50, 51, 100)]
+        lines = q._career_stats_lines(records)
+        assert lines == ["11-25名：2次", "26-50名：2次", "51-100名：2次"]
+
+    def test_outside_top100_ignored(self):
+        records = [{"position": 101}, {"position": 500}, {"position": 0}]
+        assert q._career_stats_lines(records) == []
+
+    def test_empty(self):
+        assert q._career_stats_lines([]) == []
+
+
+class TestQueryCareerStats:
+    @pytest.mark.asyncio
+    async def test_career_appends_stats_section(self):
+        async def fake_get(mode, sid):
+            if mode == "undergroundarena" and sid == "3":
+                return [{"battle_tag": "Alice#1234", "position": 10, "score": 1000}]
+            if mode == "undergroundarena" and sid == "4":
+                return [{"battle_tag": "Alice#1234", "position": 25, "score": 900}]
+            return []
+
+        matcher = AsyncMock()
+        with patch.object(q, "_get_cached_season_all", side_effect=fake_get):
+            await q.query_career(matcher, "Alice")
+
+        reply = matcher.finish.call_args[0][0]
+        assert "【前100名次达成统计】" in reply
+        assert "第10名：1次" in reply
+        assert "11-25名：1次" in reply
+
+    @pytest.mark.asyncio
+    async def test_career_without_top100_stats(self):
+        async def fake_get(mode, sid):
+            if mode == "undergroundarena" and sid == "2":
+                return [{"battle_tag": "Bob#1234", "position": 150, "score": 800}]
+            return []
+
+        matcher = AsyncMock()
+        with patch.object(q, "_get_cached_season_all", side_effect=fake_get):
+            await q.query_career(matcher, "Bob")
+
+        reply = matcher.finish.call_args[0][0]
+        assert "暂无前100名记录" in reply

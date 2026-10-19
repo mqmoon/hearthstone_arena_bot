@@ -25,6 +25,7 @@ _records_cache: dict | None = None
 _records_cache_lock = threading.Lock()
 
 MAX_DELETE_INDICES = 30
+MAX_MODIFY_ROUNDS = 30
 MAX_WINS = 12
 MIN_WINS = 0
 EMA_DECAY = 0.9
@@ -81,6 +82,7 @@ def _resolve_class(name: str) -> str | None:
 upload_cmd = on_command("战绩上传", aliases={"上传战绩", "upload"}, priority=10, block=True)
 record_list_cmd = on_command("战绩列表", aliases={"我的战绩", "recordlist", "盒战绩", "战绩查询"}, priority=10, block=True)
 delete_records_cmd = on_command("删除战绩", aliases={"deleterecord", "deleterecords"}, priority=10, block=True)
+modify_records_cmd = on_command("修改战绩", aliases={"战绩修改", "editrecord", "editrecords", "modifyrecord"}, priority=10, block=True)
 clear_records_cmd = on_command("清空战绩", aliases={"clearrecords"}, priority=10, block=True)
 class_dist_cmd = on_command("战绩分布", aliases={"classdist"}, priority=10, block=True)
 score_query_cmd = on_command("分数查询", aliases={"score", "盒分数"}, priority=10, block=True)
@@ -351,6 +353,102 @@ def _parse_delete_args(user_input: str, qq: str) -> tuple[str | None, str | None
     return (game_id_lower, display_name, indices, None)
 
 
+def _parse_modify_args(user_input: str, qq: str) -> tuple[str | None, str | None, list[dict] | None, str | None]:
+    """Parse modify args. Returns (game_id_lower, display_name, edits, error_message).
+    Edits are {"index", "class", "wins", "losses"} dicts; index is 1-based as entered.
+    Format: 修改战绩 [游戏ID] 轮次 职业 胜场 [负场] [轮次 职业 胜场 [负场] ...]
+    胜场0-11时负场固定为3，无需填写；胜场12时必须填写负场（0/1/2）。
+    单次最多修改30轮，同一轮次不可重复指定。"""
+    parts = user_input.split()
+    if not parts:
+        game_id_lower, display_name, error = _resolve_game_id("", qq)
+        if error:
+            return (None, None, None, error)
+        return (game_id_lower, display_name, None,
+                "请指定要修改的轮次及新战绩。\n示例：修改战绩 小明 1 法师 7\n"
+                "示例：修改战绩 1 法 7 2 牧 12 1")
+
+    # First token is game_id if non-numeric; otherwise it is the first round index
+    first = parts[0]
+    if first.isdigit():
+        game_id_lower, display_name, error = _resolve_game_id("", qq)
+        if error:
+            return (None, None, None, error)
+        edit_tokens = parts
+    else:
+        game_id_lower = first.lower()
+        binding = _find_binding_by_game_id(game_id_lower)
+        if binding is None:
+            return (None, None, None, f"游戏账号【{first}】未找到绑定记录。")
+        if binding["qq"] != qq:
+            return (None, None, None, f"游戏账号【{first}】不在你的绑定列表中。")
+        display_name = binding["name"]
+        edit_tokens = parts[1:]
+
+    if not edit_tokens:
+        return (None, None, None,
+                "请指定要修改的轮次及新战绩。\n示例：修改战绩 小明 1 法师 7")
+
+    edits: list[dict] = []
+    seen_indices: set[int] = set()
+    idx = 0
+    while idx < len(edit_tokens):
+        edit_num = len(edits) + 1
+        index_str = edit_tokens[idx]
+        if not index_str.isdigit():
+            return (None, None, None, f"第{edit_num}处修改：轮次索引「{index_str}」不是有效数字。")
+        round_index = int(index_str)
+        if round_index < 1:
+            return (None, None, None, f"第{edit_num}处修改：轮次索引「{round_index}」无效，索引从 1 开始。")
+        if round_index in seen_indices:
+            return (None, None, None, f"第{edit_num}处修改：轮次索引「{round_index}」重复指定。")
+        seen_indices.add(round_index)
+
+        if idx + 1 >= len(edit_tokens):
+            return (None, None, None, f"第{edit_num}处修改：轮次{round_index}缺少职业参数。")
+        class_str = edit_tokens[idx + 1]
+        class_name = _resolve_class(class_str)
+        if class_name is None:
+            return (None, None, None,
+                    f"第{edit_num}处修改：「{class_str}」不是合法的职业名称或别名。\n"
+                    f"合法职业：{' / '.join(CLASS_NAMES)}")
+
+        if idx + 2 >= len(edit_tokens):
+            return (None, None, None, f"第{edit_num}处修改：轮次{round_index}缺少胜场参数。")
+        win_str = edit_tokens[idx + 2]
+        if not win_str.isdigit():
+            return (None, None, None, f"第{edit_num}处修改：胜场「{win_str}」不是有效数字。")
+        wins = int(win_str)
+        if wins < MIN_WINS or wins > MAX_WINS:
+            return (None, None, None,
+                    f"第{edit_num}处修改：胜场{wins}超出合法范围（{MIN_WINS}~{MAX_WINS}）。")
+
+        if wins == 12:
+            if idx + 3 >= len(edit_tokens):
+                return (None, None, None,
+                        f"第{edit_num}处修改：轮次{round_index}胜场12时必须提供负场（0/1/2）。")
+            loss_str = edit_tokens[idx + 3]
+            if not loss_str.isdigit():
+                return (None, None, None,
+                        f"第{edit_num}处修改：负场「{loss_str}」不是有效数字。")
+            losses = int(loss_str)
+            if losses not in (0, 1, 2):
+                return (None, None, None,
+                        f"第{edit_num}处修改：胜场12时负场只能为0/1/2，实际为{losses}。")
+            idx += 4
+        else:
+            # wins 0-11: losses is always 3 and cannot be specified separately
+            losses = 3
+            idx += 3
+
+        edits.append({"index": round_index, "class": class_name, "wins": wins, "losses": losses})
+
+        if len(edits) > MAX_MODIFY_ROUNDS:
+            return (None, None, None, f"单次最多修改 {MAX_MODIFY_ROUNDS} 轮战绩。")
+
+    return (game_id_lower, display_name, edits, None)
+
+
 # ============================================================
 # Command handlers
 # ============================================================
@@ -445,6 +543,48 @@ async def _handle_delete(matcher, qq: str, user_input: str):
         f"已删除游戏账号【{display_name}】的 {len(set(indices))} 轮战绩。\n"
         f"剩余轮次: {len(rounds)}"
     )
+
+
+async def _handle_modify(matcher, qq: str, user_input: str):
+    game_id_lower, display_name, edits, error = _parse_modify_args(user_input, qq)
+    if error:
+        await matcher.finish(error)
+        return
+
+    data = _load_records()
+    entry = data.get("by_game_id", {}).get(game_id_lower)
+
+    if entry is None or not entry.get("rounds"):
+        await matcher.finish(f"游戏账号【{display_name}】还没有战绩记录，无法修改。")
+        return
+
+    rounds = entry["rounds"]
+    max_idx = len(rounds)
+
+    # Validate indices
+    invalid = sorted({e["index"] for e in edits if e["index"] > max_idx})
+    if invalid:
+        await matcher.finish(f"轮次索引 {invalid} 超出范围（当前共{max_idx}轮）。")
+        return
+
+    for e in edits:
+        r = rounds[e["index"] - 1]  # convert 1-based to 0-based
+        r["class"] = e["class"]
+        r["wins"] = e["wins"]
+        r["losses"] = e["losses"]
+
+    # Recalculate after mutation so score/avg_wins and every derived view stay consistent
+    _recalc_scores(rounds)
+    _save_records(data)
+
+    latest = rounds[-1]
+    lines = [f"已修改游戏账号【{display_name}】的 {len(edits)} 轮战绩。"]
+    for e in edits:
+        lines.append(f"第{e['index']}轮. {e['class']} {e['wins']}胜{e['losses']}负")
+    lines.append(f"当前轮次: {len(rounds)}")
+    lines.append(f"当前分数: {latest['score']}  均胜: {latest.get('avg_wins', '-')}")
+
+    await matcher.finish("\n".join(lines))
 
 
 async def _handle_clear(matcher, qq: str, user_input: str):
@@ -770,20 +910,17 @@ async def _handle_any_pk(matcher, qq: str, user_input: str):
     b_score = b_latest.get("score", 0)
 
     lines = [
-        "【PK · 最新赛季】",
-        f"目标【{b_name}】: {len(b_rounds)}轮  分数: {b_score}  均胜: {b_latest.get('avg_wins', '-')}",
-        f"挑战【{a_name}】: {len(a_rounds)}轮  分数: {a_score}  均胜: {a_latest.get('avg_wins', '-')}",
+        f"【与{b_name}PK】",
+        f"【{b_name}】: {len(b_rounds)}轮  分数: {b_score}  均胜: {b_latest.get('avg_wins', '-')}",
+        f"【{a_name}】: {len(a_rounds)}轮  分数: {a_score}  均胜: {a_latest.get('avg_wins', '-')}",
     ]
 
     if a_score > b_score:
-        lines.append(f"【{a_name}】已经战胜了【{b_name}】！")
+        lines.append(f"你已经击败了【{b_name}】！")
     else:
         needed = (b_score - a_score * EMA_DECAY) / 100
         min_wins = int(needed) + 1 if needed >= 0 else 1
-        if min_wins > MAX_WINS:
-            lines.append(f"差距较大，下一轮即使取得{MAX_WINS}胜也无法击败【{b_name}】。")
-        else:
-            lines.append(f"【{a_name}】只要下一轮取得{min_wins}胜及以上，即可击败【{b_name}】！")
+        lines.append(f"只要下一轮取得{min_wins}胜及以上，即可击败【{b_name}】！")
 
     await matcher.finish("\n".join(lines))
 
@@ -829,6 +966,19 @@ async def handle_delete_records(event: MessageEvent, args: Message = CommandArg(
     except Exception as e:
         logger.error(f"删除战绩操作报错: {e}")
         await delete_records_cmd.finish("删除战绩发生未知错误，请联系管理员。")
+
+
+@modify_records_cmd.handle()
+async def handle_modify_records(event: MessageEvent, args: Message = CommandArg()):
+    user_input = args.extract_plain_text().strip()
+    qq = event.get_user_id()
+    try:
+        await _handle_modify(modify_records_cmd, qq, user_input)
+    except FinishedException:
+        raise
+    except Exception as e:
+        logger.error(f"修改战绩操作报错: {e}")
+        await modify_records_cmd.finish("修改战绩发生未知错误，请联系管理员。")
 
 
 @clear_records_cmd.handle()

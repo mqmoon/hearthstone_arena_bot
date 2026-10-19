@@ -459,6 +459,131 @@ class TestParseDeleteArgs:
 # Command handler tests
 # ============================================================
 
+class TestParseModifyArgs:
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        monkeypatch.setattr(b, "DATA_DIR", self.tmpdir)
+        b._bindings_cache = None
+        yield
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        b._bindings_cache = None
+
+    def _bind(self, game_id, qq="111", name=None):
+        data = b._load_bindings()
+        if "by_game_id" not in data:
+            data["by_game_id"] = {}
+        data["by_game_id"][game_id.lower()] = {"qq": qq, "name": name or game_id}
+        b._save_bindings(data)
+
+    def test_empty_input_has_bindings(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        game_id_lower, display_name, edits, error = br._parse_modify_args("", "111")
+        assert error is not None
+        assert "修改战绩" in error
+        assert game_id_lower == "xiaoming"
+        assert edits is None
+
+    def test_empty_input_no_bindings(self):
+        _, _, _, error = br._parse_modify_args("", "111")
+        assert "还没有绑定" in error
+
+    def test_game_id_with_edits(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        game_id_lower, display_name, edits, error = br._parse_modify_args("xiaoming 1 法师 7 2 猎人 12 1", "111")
+        assert error is None
+        assert game_id_lower == "xiaoming"
+        assert display_name == "小明"
+        assert edits == [
+            {"index": 1, "class": "法师", "wins": 7, "losses": 3},
+            {"index": 2, "class": "猎人", "wins": 12, "losses": 1},
+        ]
+
+    def test_no_game_id_uses_first_binding(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        game_id_lower, _, edits, error = br._parse_modify_args("1 法师 5", "111")
+        assert error is None
+        assert game_id_lower == "xiaoming"
+        assert edits == [{"index": 1, "class": "法师", "wins": 5, "losses": 3}]
+
+    def test_no_game_id_no_bindings(self):
+        _, _, _, error = br._parse_modify_args("1 法师 5", "111")
+        assert "还没有绑定" in error
+
+    def test_class_alias_resolved(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        _, _, edits, error = br._parse_modify_args("xiaoming 1 dk 12 0", "111")
+        assert error is None
+        assert edits[0]["class"] == "死亡骑士"
+        assert edits[0]["losses"] == 0
+
+    def test_game_id_not_found(self):
+        _, _, _, error = br._parse_modify_args("nobody 1 法师 5", "111")
+        assert "未找到绑定记录" in error
+
+    def test_game_id_bound_to_other_qq(self):
+        self._bind("xiaoming", qq="999", name="小明")
+        _, _, _, error = br._parse_modify_args("xiaoming 1 法师 5", "111")
+        assert "不在你的绑定列表中" in error
+
+    def test_game_id_without_edits(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        _, _, _, error = br._parse_modify_args("xiaoming", "111")
+        assert "轮次" in error
+
+    def test_non_numeric_index(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        _, _, _, error = br._parse_modify_args("xiaoming abc 法师 5", "111")
+        assert "不是有效数字" in error
+
+    def test_index_less_than_1(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        _, _, _, error = br._parse_modify_args("xiaoming 0 法师 5", "111")
+        assert "索引从 1 开始" in error
+
+    def test_duplicate_index_rejected(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        _, _, _, error = br._parse_modify_args("xiaoming 1 法师 5 1 猎人 7", "111")
+        assert "重复指定" in error
+
+    def test_missing_class(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        _, _, _, error = br._parse_modify_args("xiaoming 1", "111")
+        assert "缺少职业" in error
+
+    def test_invalid_class(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        _, _, _, error = br._parse_modify_args("xiaoming 1 不存在 5", "111")
+        assert "不是合法的职业" in error
+
+    def test_missing_wins(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        _, _, _, error = br._parse_modify_args("xiaoming 1 法师", "111")
+        assert "缺少胜场" in error
+
+    def test_wins_out_of_range(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        _, _, _, error = br._parse_modify_args("xiaoming 1 法师 13", "111")
+        assert "超出合法范围" in error
+
+    def test_wins_12_requires_losses(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        _, _, _, error = br._parse_modify_args("xiaoming 1 法师 12", "111")
+        assert "必须提供负场" in error
+
+    def test_wins_12_losses_invalid(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        _, _, _, error = br._parse_modify_args("xiaoming 1 法师 12 3", "111")
+        assert "只能为0/1/2" in error
+
+    def test_exceeds_max_rounds(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        edits_str = " ".join(f"{i} 法师 5" for i in range(1, 32))
+        _, _, _, error = br._parse_modify_args(f"xiaoming {edits_str}", "111")
+        assert "30" in error
+
+
 class TestHandleUpload:
     @pytest.fixture(autouse=True)
     def setup(self, monkeypatch):
@@ -785,6 +910,179 @@ class TestHandleDelete:
         assert len(data["by_game_id"]["xiaoming"]["rounds"]) == 3
 
 
+class TestHandleModify:
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        monkeypatch.setattr(b, "DATA_DIR", self.tmpdir)
+        monkeypatch.setattr(br, "DATA_DIR", self.tmpdir)
+        b._bindings_cache = None
+        br._records_cache = None
+        self.matcher = AsyncMock()
+        yield
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        b._bindings_cache = None
+        br._records_cache = None
+
+    def _bind(self, game_id, qq="111", name=None):
+        data = b._load_bindings()
+        if "by_game_id" not in data:
+            data["by_game_id"] = {}
+        data["by_game_id"][game_id.lower()] = {"qq": qq, "name": name or game_id}
+        b._save_bindings(data)
+
+    def _upload(self, game_id, rounds):
+        data = br._load_records()
+        game_id_lower = game_id.lower()
+        entry = data.get("by_game_id", {}).get(game_id_lower)
+        if entry is None:
+            entry = {"rounds": []}
+            if "by_game_id" not in data:
+                data["by_game_id"] = {}
+            data["by_game_id"][game_id_lower] = entry
+        for r in rounds:
+            entry["rounds"].append({"wins": r["wins"], "losses": r["losses"], "class": r["class"], "score": 0})
+        br._recalc_scores(entry["rounds"])
+        br._save_records(data)
+
+    @pytest.mark.asyncio
+    async def test_modify_success(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        self._upload("xiaoming", [
+            {"class": "法师", "wins": 5, "losses": 3},
+            {"class": "萨满祭司", "wins": 3, "losses": 3},
+            {"class": "猎人", "wins": 7, "losses": 3},
+        ])
+        await br._handle_modify(self.matcher, "111", "xiaoming 2 牧师 10")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "已修改" in reply
+        assert "第2轮. 牧师 10胜3负" in reply
+
+        data = br._load_records()
+        rounds = data["by_game_id"]["xiaoming"]["rounds"]
+        assert len(rounds) == 3
+        assert rounds[1]["class"] == "牧师"
+        assert rounds[1]["wins"] == 10
+        assert rounds[1]["losses"] == 3
+        # Scores recalculated after the modification
+        assert rounds[0]["score"] == 500.0
+        assert rounds[1]["score"] == round(500.0 * 0.9 + 10 * 100, 1)  # 1450.0
+        assert rounds[2]["score"] == round(1450.0 * 0.9 + 7 * 100, 1)  # 2005.0
+        assert rounds[2]["avg_wins"] == round((5 + 10 + 7) / 3, 2)  # 7.33
+
+    @pytest.mark.asyncio
+    async def test_modify_multiple_rounds(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        self._upload("xiaoming", [
+            {"class": "法师", "wins": 5, "losses": 3},
+            {"class": "萨满祭司", "wins": 3, "losses": 3},
+        ])
+        await br._handle_modify(self.matcher, "111", "xiaoming 1 猎人 12 1 2 战士 0")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "已修改" in reply
+        assert "第1轮. 猎人 12胜1负" in reply
+        assert "第2轮. 战士 0胜3负" in reply
+
+        rounds = br._load_records()["by_game_id"]["xiaoming"]["rounds"]
+        assert rounds[0] == {"class": "猎人", "wins": 12, "losses": 1,
+                             "score": 1200.0, "avg_wins": 12.0}
+        assert rounds[1]["wins"] == 0
+        assert rounds[1]["losses"] == 3
+        assert rounds[1]["score"] == round(1200.0 * 0.9, 1)  # 1080.0
+
+    @pytest.mark.asyncio
+    async def test_modify_no_game_id_uses_first_binding(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        self._upload("xiaoming", [{"class": "法师", "wins": 5, "losses": 3}])
+        await br._handle_modify(self.matcher, "111", "1 猎人 7")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "已修改" in reply
+        rounds = br._load_records()["by_game_id"]["xiaoming"]["rounds"]
+        assert rounds[0]["class"] == "猎人"
+        assert rounds[0]["wins"] == 7
+
+    @pytest.mark.asyncio
+    async def test_modify_index_out_of_range(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        self._upload("xiaoming", [{"class": "法师", "wins": 5, "losses": 3}])
+        await br._handle_modify(self.matcher, "111", "xiaoming 3 猎人 7")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "超出范围" in reply
+        # Records untouched
+        rounds = br._load_records()["by_game_id"]["xiaoming"]["rounds"]
+        assert rounds[0]["wins"] == 5
+
+    @pytest.mark.asyncio
+    async def test_modify_no_records(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        await br._handle_modify(self.matcher, "111", "xiaoming 1 法师 5")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "还没有战绩记录" in reply
+
+    @pytest.mark.asyncio
+    async def test_modify_game_id_not_bound(self):
+        await br._handle_modify(self.matcher, "111", "nobody 1 法师 5")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "未找到绑定记录" in reply
+
+    @pytest.mark.asyncio
+    async def test_modify_reflected_in_derived_views(self, monkeypatch):
+        """修改后，战绩列表、分数查询、战绩分布、胜场分布都应读取到新数据。"""
+        self._bind("xiaoming", qq="111", name="小明")
+        self._upload("xiaoming", [
+            {"class": "法师", "wins": 5, "losses": 3},
+            {"class": "萨满祭司", "wins": 3, "losses": 3},
+            {"class": "猎人", "wins": 7, "losses": 3},
+        ])
+        await br._handle_modify(self.matcher, "111", "xiaoming 2 牧师 10")
+
+        # 战绩列表
+        await br._handle_record_list(self.matcher, "111", "xiaoming")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "第1轮. 法师 5胜3负" in reply
+        assert "第2轮. 牧师 10胜3负" in reply
+        assert "第3轮. 猎人 7胜3负" in reply
+        assert "当前分数: 2005.0  均胜: 7.33" in reply
+
+        # 分数查询
+        await br._handle_score_query(self.matcher, "111", "xiaoming")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "当前分数: 2005.0  均胜: 7.33" in reply
+
+        # 战绩分布 / 胜场分布：捕获传给绘图函数的数据
+        captured = {}
+        monkeypatch.setattr(br, "CHART_FONT_PATH", "fake-font")
+
+        def fake_class_chart(rounds, name, score, avg):
+            captured["class"] = ([r["class"] for r in rounds], score, avg)
+            return Path("/tmp/fake-class.png")
+
+        def fake_win_chart(rounds, name, score, avg):
+            captured["win"] = ([r["wins"] for r in rounds], score, avg)
+            return Path("/tmp/fake-win.png")
+
+        monkeypatch.setattr(br, "_generate_distribution_chart", fake_class_chart)
+        monkeypatch.setattr(br, "_generate_win_distribution_chart", fake_win_chart)
+
+        await br._handle_class_distribution(self.matcher, "111", "xiaoming")
+        await br._handle_win_distribution(self.matcher, "111", "xiaoming")
+
+        assert captured["class"] == (["法师", "牧师", "猎人"], 2005.0, 7.33)
+        assert captured["win"] == ([5, 10, 7], 2005.0, 7.33)
+
+    @pytest.mark.asyncio
+    async def test_modify_parse_error_does_not_change_records(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        self._upload("xiaoming", [{"class": "法师", "wins": 5, "losses": 3}])
+        await br._handle_modify(self.matcher, "111", "xiaoming 1 法师 12")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "必须提供负场" in reply
+        rounds = br._load_records()["by_game_id"]["xiaoming"]["rounds"]
+        assert rounds[0]["class"] == "法师"
+        assert rounds[0]["wins"] == 5
+
+
 # ============================================================
 # Integration tests
 # ============================================================
@@ -944,11 +1242,11 @@ class TestHandleAnyPk:
         self._upload("b", [10])
         await br._handle_any_pk(self.matcher, "111", "a b")
         reply = self.matcher.finish.call_args[0][0]
-        assert "【PK · 最新赛季】" in reply
-        assert "目标【b】" in reply
-        assert "挑战【a】" in reply
+        assert "【与bPK】" in reply
+        assert "【b】: 1轮" in reply
+        assert "【a】: 1轮" in reply
         # needed = (1000 - 500*0.9)/100 = 5.5 -> 6 wins
-        assert "6胜及以上" in reply
+        assert "只要下一轮取得6胜及以上，即可击败【b】！" in reply
 
     @pytest.mark.asyncio
     async def test_a_already_ahead(self):
@@ -956,7 +1254,7 @@ class TestHandleAnyPk:
         self._upload("b", [5])
         await br._handle_any_pk(self.matcher, "111", "a b")
         reply = self.matcher.finish.call_args[0][0]
-        assert "【a】已经战胜了【b】" in reply
+        assert "你已经击败了【b】" in reply
 
     @pytest.mark.asyncio
     async def test_single_arg_uses_first_binding_as_a(self):
@@ -965,8 +1263,8 @@ class TestHandleAnyPk:
         self._upload("b", [10])
         await br._handle_any_pk(self.matcher, "111", "b")
         reply = self.matcher.finish.call_args[0][0]
-        assert "挑战【小明】" in reply
-        assert "目标【b】" in reply
+        assert "【小明】: 1轮" in reply
+        assert "【b】: 1轮" in reply
 
     @pytest.mark.asyncio
     async def test_single_arg_without_binding(self):
@@ -1001,6 +1299,6 @@ class TestHandleAnyPk:
         # "pk A B" is now registered on the PK command, not 与菜逼PK.
         await br._handle_any_pk(self.matcher, "111", "a b")
         reply = self.matcher.finish.call_args[0][0]
-        assert "【PK · 最新赛季】" in reply
-        assert "目标【b】" in reply
-        assert "6胜及以上" in reply
+        assert "【与bPK】" in reply
+        assert "【b】: 1轮" in reply
+        assert "只要下一轮取得6胜及以上，即可击败【b】！" in reply

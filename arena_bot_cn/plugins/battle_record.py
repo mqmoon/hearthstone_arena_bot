@@ -83,6 +83,7 @@ upload_cmd = on_command("战绩上传", aliases={"上传战绩", "upload"}, prio
 record_list_cmd = on_command("战绩列表", aliases={"我的战绩", "recordlist", "盒战绩", "战绩查询"}, priority=10, block=True)
 delete_records_cmd = on_command("删除战绩", aliases={"deleterecord", "deleterecords"}, priority=10, block=True)
 modify_records_cmd = on_command("修改战绩", aliases={"战绩修改", "editrecord", "editrecords", "modifyrecord"}, priority=10, block=True)
+insert_records_cmd = on_command("插入战绩", aliases={"战绩插入", "insertrecord", "insertrecords"}, priority=10, block=True)
 clear_records_cmd = on_command("清空战绩", aliases={"clearrecords"}, priority=10, block=True)
 class_dist_cmd = on_command("战绩分布", aliases={"classdist"}, priority=10, block=True)
 score_query_cmd = on_command("分数查询", aliases={"score", "盒分数"}, priority=10, block=True)
@@ -449,6 +450,92 @@ def _parse_modify_args(user_input: str, qq: str) -> tuple[str | None, str | None
     return (game_id_lower, display_name, edits, None)
 
 
+def _parse_insert_args(user_input: str, qq: str) -> tuple[str | None, str | None, int | None, dict | None, str | None]:
+    """Parse insert args. Returns (game_id_lower, display_name, index, new_round, error_message).
+    Index is 1-based; the new round becomes round N and later rounds shift down.
+    Format: 插入战绩 [游戏ID] 轮次 职业 胜场 [负场]
+    胜场0-11时负场可省略（默认/只能为3）；胜场12时必须填写负场（0/1/2）。
+    每次只能插入一轮。"""
+    parts = user_input.split()
+    if not parts:
+        game_id_lower, display_name, error = _resolve_game_id("", qq)
+        if error:
+            return (None, None, None, None, error)
+        return (game_id_lower, display_name, None, None,
+                "请指定要插入的轮次及战绩。\n示例：插入战绩 小明 2 法师 7\n"
+                "示例：插入战绩 1 法 7")
+
+    # First token is game_id if non-numeric; otherwise it is the target round index
+    first = parts[0]
+    if first.isdigit():
+        game_id_lower, display_name, error = _resolve_game_id("", qq)
+        if error:
+            return (None, None, None, None, error)
+        round_tokens = parts
+    else:
+        game_id_lower = first.lower()
+        binding = _find_binding_by_game_id(game_id_lower)
+        if binding is None:
+            return (None, None, None, None, f"游戏账号【{first}】未找到绑定记录。")
+        if binding["qq"] != qq:
+            return (None, None, None, None, f"游戏账号【{first}】不在你的绑定列表中。")
+        display_name = binding["name"]
+        round_tokens = parts[1:]
+
+    if not round_tokens:
+        return (None, None, None, None,
+                "请指定要插入的轮次及战绩。\n示例：插入战绩 小明 2 法师 7")
+
+    if len(round_tokens) < 3:
+        return (None, None, None, None,
+                "参数不足，格式：插入战绩 [游戏ID] 轮次 职业 胜场 [负场]\n"
+                "示例：插入战绩 小明 2 法师 7")
+    if len(round_tokens) > 4:
+        return (None, None, None, None, "插入战绩每次只能插入一轮。")
+
+    index_str = round_tokens[0]
+    if not index_str.isdigit():
+        return (None, None, None, None, f"轮次索引「{index_str}」不是有效数字。")
+    round_index = int(index_str)
+    if round_index < 1:
+        return (None, None, None, None, f"轮次索引「{round_index}」无效，索引从 1 开始。")
+
+    class_str = round_tokens[1]
+    class_name = _resolve_class(class_str)
+    if class_name is None:
+        return (None, None, None, None,
+                f"「{class_str}」不是合法的职业名称或别名。\n"
+                f"合法职业：{' / '.join(CLASS_NAMES)}")
+
+    win_str = round_tokens[2]
+    if not win_str.isdigit():
+        return (None, None, None, None, f"胜场「{win_str}」不是有效数字。")
+    wins = int(win_str)
+    if wins < MIN_WINS or wins > MAX_WINS:
+        return (None, None, None, None,
+                f"胜场{wins}超出合法范围（{MIN_WINS}~{MAX_WINS}）。")
+
+    losses = 3
+    if len(round_tokens) == 4:
+        loss_str = round_tokens[3]
+        if not loss_str.isdigit():
+            return (None, None, None, None, f"负场「{loss_str}」不是有效数字。")
+        losses = int(loss_str)
+        if wins == 12:
+            if losses not in (0, 1, 2):
+                return (None, None, None, None,
+                        f"胜场12时负场只能为0/1/2，实际为{losses}。")
+        elif losses != 3:
+            return (None, None, None, None,
+                    f"胜场{wins}时负场必须为3，实际为{losses}。\n"
+                    f"提示：胜场0-11时可省略负场，默认负场=3。")
+    elif wins == 12:
+        return (None, None, None, None, "胜场12时必须提供负场（0/1/2）。")
+
+    new_round = {"class": class_name, "wins": wins, "losses": losses}
+    return (game_id_lower, display_name, round_index, new_round, None)
+
+
 # ============================================================
 # Command handlers
 # ============================================================
@@ -585,6 +672,41 @@ async def _handle_modify(matcher, qq: str, user_input: str):
     lines.append(f"当前分数: {latest['score']}  均胜: {latest.get('avg_wins', '-')}")
 
     await matcher.finish("\n".join(lines))
+
+
+async def _handle_insert(matcher, qq: str, user_input: str):
+    game_id_lower, display_name, round_index, new_round, error = _parse_insert_args(user_input, qq)
+    if error:
+        await matcher.finish(error)
+        return
+
+    data = _load_records()
+    entry = data.get("by_game_id", {}).get(game_id_lower)
+
+    if entry is None:
+        entry = {"rounds": []}
+        if "by_game_id" not in data:
+            data["by_game_id"] = {}
+        data["by_game_id"][game_id_lower] = entry
+
+    rounds = entry["rounds"]
+    max_idx = len(rounds) + 1  # insertion position after the last round is allowed
+
+    if round_index > max_idx:
+        await matcher.finish(f"轮次索引 {round_index} 超出范围（当前共{len(rounds)}轮，可插入位置1~{max_idx}）。")
+        return
+
+    rounds.insert(round_index - 1, {**new_round, "score": 0})  # convert 1-based to 0-based
+    _recalc_scores(rounds)
+    _save_records(data)
+
+    latest = rounds[-1]
+    await matcher.finish(
+        f"已插入游戏账号【{display_name}】的第{round_index}轮战绩。\n"
+        f"第{round_index}轮. {new_round['class']} {new_round['wins']}胜{new_round['losses']}负\n"
+        f"当前轮次: {len(rounds)}\n"
+        f"当前分数: {latest['score']}  均胜: {latest.get('avg_wins', '-')}"
+    )
 
 
 async def _handle_clear(matcher, qq: str, user_input: str):
@@ -979,6 +1101,19 @@ async def handle_modify_records(event: MessageEvent, args: Message = CommandArg(
     except Exception as e:
         logger.error(f"修改战绩操作报错: {e}")
         await modify_records_cmd.finish("修改战绩发生未知错误，请联系管理员。")
+
+
+@insert_records_cmd.handle()
+async def handle_insert_records(event: MessageEvent, args: Message = CommandArg()):
+    user_input = args.extract_plain_text().strip()
+    qq = event.get_user_id()
+    try:
+        await _handle_insert(insert_records_cmd, qq, user_input)
+    except FinishedException:
+        raise
+    except Exception as e:
+        logger.error(f"插入战绩操作报错: {e}")
+        await insert_records_cmd.finish("插入战绩发生未知错误，请联系管理员。")
 
 
 @clear_records_cmd.handle()

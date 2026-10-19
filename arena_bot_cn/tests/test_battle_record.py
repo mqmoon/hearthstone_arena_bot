@@ -584,6 +584,125 @@ class TestParseModifyArgs:
         assert "30" in error
 
 
+class TestParseInsertArgs:
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        monkeypatch.setattr(b, "DATA_DIR", self.tmpdir)
+        b._bindings_cache = None
+        yield
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        b._bindings_cache = None
+
+    def _bind(self, game_id, qq="111", name=None):
+        data = b._load_bindings()
+        if "by_game_id" not in data:
+            data["by_game_id"] = {}
+        data["by_game_id"][game_id.lower()] = {"qq": qq, "name": name or game_id}
+        b._save_bindings(data)
+
+    def test_empty_input_has_bindings(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        game_id_lower, display_name, index, new_round, error = br._parse_insert_args("", "111")
+        assert error is not None
+        assert "插入战绩" in error
+        assert game_id_lower == "xiaoming"
+        assert index is None
+        assert new_round is None
+
+    def test_empty_input_no_bindings(self):
+        _, _, _, _, error = br._parse_insert_args("", "111")
+        assert "还没有绑定" in error
+
+    def test_game_id_with_round(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        game_id_lower, display_name, index, new_round, error = br._parse_insert_args("xiaoming 2 法师 7", "111")
+        assert error is None
+        assert game_id_lower == "xiaoming"
+        assert display_name == "小明"
+        assert index == 2
+        assert new_round == {"class": "法师", "wins": 7, "losses": 3}
+
+    def test_no_game_id_uses_first_binding(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        game_id_lower, _, index, new_round, error = br._parse_insert_args("1 法师 5", "111")
+        assert error is None
+        assert game_id_lower == "xiaoming"
+        assert index == 1
+        assert new_round == {"class": "法师", "wins": 5, "losses": 3}
+
+    def test_no_game_id_no_bindings(self):
+        _, _, _, _, error = br._parse_insert_args("1 法师 5", "111")
+        assert "还没有绑定" in error
+
+    def test_class_alias_resolved(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        _, _, _, new_round, error = br._parse_insert_args("xiaoming 1 dk 12 0", "111")
+        assert error is None
+        assert new_round == {"class": "死亡骑士", "wins": 12, "losses": 0}
+
+    def test_explicit_losses_3_for_non_12_wins(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        _, _, _, new_round, error = br._parse_insert_args("xiaoming 1 法师 7 3", "111")
+        assert error is None
+        assert new_round["losses"] == 3
+
+    def test_explicit_losses_not_3_for_non_12_wins(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        _, _, _, _, error = br._parse_insert_args("xiaoming 1 法师 7 2", "111")
+        assert "负场必须为3" in error
+
+    def test_wins_12_requires_losses(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        _, _, _, _, error = br._parse_insert_args("xiaoming 1 法师 12", "111")
+        assert "必须提供负场" in error
+
+    def test_wins_12_losses_invalid(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        _, _, _, _, error = br._parse_insert_args("xiaoming 1 法师 12 3", "111")
+        assert "只能为0/1/2" in error
+
+    def test_only_one_round_per_operation(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        _, _, _, _, error = br._parse_insert_args("xiaoming 1 法师 5 2 猎人 7", "111")
+        assert "每次只能插入一轮" in error
+
+    def test_non_numeric_index(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        _, _, _, _, error = br._parse_insert_args("xiaoming abc 法师 5", "111")
+        assert "不是有效数字" in error
+
+    def test_index_less_than_1(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        _, _, _, _, error = br._parse_insert_args("xiaoming 0 法师 5", "111")
+        assert "索引从 1 开始" in error
+
+    def test_missing_params(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        _, _, _, _, error = br._parse_insert_args("xiaoming 1", "111")
+        assert "参数不足" in error
+
+    def test_invalid_class(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        _, _, _, _, error = br._parse_insert_args("xiaoming 1 不存在 5", "111")
+        assert "不是合法的职业" in error
+
+    def test_wins_out_of_range(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        _, _, _, _, error = br._parse_insert_args("xiaoming 1 法师 13", "111")
+        assert "超出合法范围" in error
+
+    def test_game_id_not_found(self):
+        _, _, _, _, error = br._parse_insert_args("nobody 1 法师 5", "111")
+        assert "未找到绑定记录" in error
+
+    def test_game_id_bound_to_other_qq(self):
+        self._bind("xiaoming", qq="999", name="小明")
+        _, _, _, _, error = br._parse_insert_args("xiaoming 1 法师 5", "111")
+        assert "不在你的绑定列表中" in error
+
+
 class TestHandleUpload:
     @pytest.fixture(autouse=True)
     def setup(self, monkeypatch):
@@ -1081,6 +1200,185 @@ class TestHandleModify:
         rounds = br._load_records()["by_game_id"]["xiaoming"]["rounds"]
         assert rounds[0]["class"] == "法师"
         assert rounds[0]["wins"] == 5
+
+
+class TestHandleInsert:
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        monkeypatch.setattr(b, "DATA_DIR", self.tmpdir)
+        monkeypatch.setattr(br, "DATA_DIR", self.tmpdir)
+        b._bindings_cache = None
+        br._records_cache = None
+        self.matcher = AsyncMock()
+        yield
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        b._bindings_cache = None
+        br._records_cache = None
+
+    def _bind(self, game_id, qq="111", name=None):
+        data = b._load_bindings()
+        if "by_game_id" not in data:
+            data["by_game_id"] = {}
+        data["by_game_id"][game_id.lower()] = {"qq": qq, "name": name or game_id}
+        b._save_bindings(data)
+
+    def _upload(self, game_id, rounds):
+        data = br._load_records()
+        game_id_lower = game_id.lower()
+        entry = data.get("by_game_id", {}).get(game_id_lower)
+        if entry is None:
+            entry = {"rounds": []}
+            if "by_game_id" not in data:
+                data["by_game_id"] = {}
+            data["by_game_id"][game_id_lower] = entry
+        for r in rounds:
+            entry["rounds"].append({"wins": r["wins"], "losses": r["losses"], "class": r["class"], "score": 0})
+        br._recalc_scores(entry["rounds"])
+        br._save_records(data)
+
+    @pytest.mark.asyncio
+    async def test_insert_in_middle(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        self._upload("xiaoming", [
+            {"class": "法师", "wins": 5, "losses": 3},
+            {"class": "萨满祭司", "wins": 3, "losses": 3},
+            {"class": "猎人", "wins": 7, "losses": 3},
+        ])
+        await br._handle_insert(self.matcher, "111", "xiaoming 2 牧师 10")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "已插入" in reply
+        assert "第2轮. 牧师 10胜3负" in reply
+
+        rounds = br._load_records()["by_game_id"]["xiaoming"]["rounds"]
+        assert [r["class"] for r in rounds] == ["法师", "牧师", "萨满祭司", "猎人"]
+        assert [r["wins"] for r in rounds] == [5, 10, 3, 7]
+        # Scores recalculated for all shifted rounds
+        assert [r["score"] for r in rounds] == [500.0, 1450.0, 1605.0, 2144.5]
+        assert rounds[-1]["avg_wins"] == 6.25
+
+    @pytest.mark.asyncio
+    async def test_insert_at_first_position(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        self._upload("xiaoming", [{"class": "法师", "wins": 5, "losses": 3}])
+        await br._handle_insert(self.matcher, "111", "xiaoming 1 猎人 12 1")
+        rounds = br._load_records()["by_game_id"]["xiaoming"]["rounds"]
+        assert len(rounds) == 2
+        assert rounds[0] == {"class": "猎人", "wins": 12, "losses": 1, "score": 1200.0, "avg_wins": 12.0}
+        assert rounds[1]["class"] == "法师"
+        assert rounds[1]["score"] == round(1200.0 * 0.9 + 500.0, 1)  # 1580.0
+
+    @pytest.mark.asyncio
+    async def test_insert_at_end(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        self._upload("xiaoming", [
+            {"class": "法师", "wins": 5, "losses": 3},
+            {"class": "萨满祭司", "wins": 3, "losses": 3},
+        ])
+        await br._handle_insert(self.matcher, "111", "xiaoming 3 猎人 7")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "第3轮. 猎人 7胜3负" in reply
+        rounds = br._load_records()["by_game_id"]["xiaoming"]["rounds"]
+        assert len(rounds) == 3
+        assert rounds[-1]["wins"] == 7
+
+    @pytest.mark.asyncio
+    async def test_insert_no_game_id_uses_first_binding(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        self._upload("xiaoming", [{"class": "法师", "wins": 5, "losses": 3}])
+        await br._handle_insert(self.matcher, "111", "2 猎人 7")
+        rounds = br._load_records()["by_game_id"]["xiaoming"]["rounds"]
+        assert [r["class"] for r in rounds] == ["法师", "猎人"]
+
+    @pytest.mark.asyncio
+    async def test_insert_out_of_range(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        self._upload("xiaoming", [{"class": "法师", "wins": 5, "losses": 3}])
+        await br._handle_insert(self.matcher, "111", "xiaoming 3 猎人 7")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "超出范围" in reply
+        rounds = br._load_records()["by_game_id"]["xiaoming"]["rounds"]
+        assert len(rounds) == 1
+
+    @pytest.mark.asyncio
+    async def test_insert_into_empty_account(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        await br._handle_insert(self.matcher, "111", "xiaoming 1 法师 5")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "已插入" in reply
+        rounds = br._load_records()["by_game_id"]["xiaoming"]["rounds"]
+        assert len(rounds) == 1
+        assert rounds[0]["class"] == "法师"
+
+    @pytest.mark.asyncio
+    async def test_insert_empty_account_index_2_out_of_range(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        await br._handle_insert(self.matcher, "111", "xiaoming 2 法师 5")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "超出范围" in reply
+
+    @pytest.mark.asyncio
+    async def test_insert_game_id_not_bound(self):
+        await br._handle_insert(self.matcher, "111", "nobody 1 法师 5")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "未找到绑定记录" in reply
+
+    @pytest.mark.asyncio
+    async def test_insert_parse_error_does_not_change_records(self):
+        self._bind("xiaoming", qq="111", name="小明")
+        self._upload("xiaoming", [{"class": "法师", "wins": 5, "losses": 3}])
+        await br._handle_insert(self.matcher, "111", "xiaoming 2 法师 5 3 猎人 7")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "每次只能插入一轮" in reply
+        rounds = br._load_records()["by_game_id"]["xiaoming"]["rounds"]
+        assert len(rounds) == 1
+
+    @pytest.mark.asyncio
+    async def test_insert_reflected_in_derived_views(self, monkeypatch):
+        """插入后，战绩列表、分数查询、战绩分布、胜场分布都应读取到新数据。"""
+        self._bind("xiaoming", qq="111", name="小明")
+        self._upload("xiaoming", [
+            {"class": "法师", "wins": 5, "losses": 3},
+            {"class": "萨满祭司", "wins": 3, "losses": 3},
+            {"class": "猎人", "wins": 7, "losses": 3},
+        ])
+        await br._handle_insert(self.matcher, "111", "xiaoming 2 牧师 10")
+
+        # 战绩列表
+        await br._handle_record_list(self.matcher, "111", "xiaoming")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "第1轮. 法师 5胜3负" in reply
+        assert "第2轮. 牧师 10胜3负" in reply
+        assert "第3轮. 萨满祭司 3胜3负" in reply
+        assert "第4轮. 猎人 7胜3负" in reply
+        assert "当前分数: 2144.5  均胜: 6.25" in reply
+
+        # 分数查询
+        await br._handle_score_query(self.matcher, "111", "xiaoming")
+        reply = self.matcher.finish.call_args[0][0]
+        assert "当前分数: 2144.5  均胜: 6.25" in reply
+
+        # 战绩分布 / 胜场分布：捕获传给绘图函数的数据
+        captured = {}
+        monkeypatch.setattr(br, "CHART_FONT_PATH", "fake-font")
+
+        def fake_class_chart(rounds, name, score, avg):
+            captured["class"] = ([r["class"] for r in rounds], score, avg)
+            return Path("/tmp/fake-class.png")
+
+        def fake_win_chart(rounds, name, score, avg):
+            captured["win"] = ([r["wins"] for r in rounds], score, avg)
+            return Path("/tmp/fake-win.png")
+
+        monkeypatch.setattr(br, "_generate_distribution_chart", fake_class_chart)
+        monkeypatch.setattr(br, "_generate_win_distribution_chart", fake_win_chart)
+
+        await br._handle_class_distribution(self.matcher, "111", "xiaoming")
+        await br._handle_win_distribution(self.matcher, "111", "xiaoming")
+
+        assert captured["class"] == (["法师", "牧师", "萨满祭司", "猎人"], 2144.5, 6.25)
+        assert captured["win"] == ([5, 10, 3, 7], 2144.5, 6.25)
 
 
 # ============================================================

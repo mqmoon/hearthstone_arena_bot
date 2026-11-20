@@ -601,6 +601,38 @@ class TestLoadSaveCache:
 
 
 # ============================================================
+# _save_season_total / _load_season_total
+# ============================================================
+
+class TestSeasonTotal:
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        monkeypatch.setattr(q, "DATA_DIR", self.tmpdir)
+        yield
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_roundtrip(self):
+        assert q._load_season_total("undergroundarena", "7") is None
+        q._save_season_total("undergroundarena", "7", 500)
+        assert q._load_season_total("undergroundarena", "7") == 500
+
+    def test_load_missing_returns_none(self):
+        assert q._load_season_total("undergroundarena", "7") is None
+
+    def test_corrupt_returns_none(self):
+        path = q._season_total_path("undergroundarena", "7")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not valid json", encoding="utf-8")
+        assert q._load_season_total("undergroundarena", "7") is None
+
+    def test_zero_total_returns_none(self):
+        q._save_season_total("undergroundarena", "7", 0)
+        assert q._load_season_total("undergroundarena", "7") is None
+
+
+# ============================================================
 # _fetch_all_pages — async
 # ============================================================
 
@@ -691,6 +723,61 @@ class TestFetchAllPages:
         result = await q._fetch_all_pages("undergroundarena", "6", 1, use_cache=True, ttl=3600)
         assert api_called
         assert result[0]["battle_tag"] == "Fresh#1234"
+
+    @pytest.mark.asyncio
+    async def test_past_season_incomplete_cache_refetches(self, monkeypatch):
+        """A past season cached mid-season (fewer players than total) is fully refetched."""
+        q._save_season_total("undergroundarena", "7", 500)
+        # Only page 1 cached, with a mere 2 players (the stale state).
+        q._save_cache(
+            q._cache_path("undergroundarena", "7", 1),
+            [{"battle_tag": "A#1", "position": 1}, {"battle_tag": "B#2", "position": 2}],
+        )
+
+        refreshed = [{"battle_tag": f"P{i}#1", "position": i} for i in range(1, 26)]
+        mock_refresh = AsyncMock(return_value=refreshed)
+        monkeypatch.setattr(q, "_refresh_full_season", mock_refresh)
+
+        result = await q._fetch_all_pages("undergroundarena", "7", 1, use_cache=True)
+        mock_refresh.assert_awaited_once()
+        assert len(result) == 25
+
+    @pytest.mark.asyncio
+    async def test_past_season_complete_cache_no_refetch(self, monkeypatch):
+        """A complete past-season cache is served as-is without any API calls."""
+        q._save_season_total("undergroundarena", "7", 50)
+        for page in range(1, 3):
+            q._save_cache(
+                q._cache_path("undergroundarena", "7", page),
+                [{"battle_tag": f"P{page * 25 + i}#1", "position": page * 25 + i} for i in range(25)],
+            )
+
+        mock_refresh = AsyncMock()
+        mock_fetch = AsyncMock()
+        monkeypatch.setattr(q, "_refresh_full_season", mock_refresh)
+        monkeypatch.setattr(q, "_fetch_page_from_api", mock_fetch)
+
+        result = await q._fetch_all_pages("undergroundarena", "7", 2, use_cache=True)
+        mock_refresh.assert_not_called()
+        mock_fetch.assert_not_called()
+        assert len(result) == 50
+
+    @pytest.mark.asyncio
+    async def test_past_season_without_total_falls_back(self, monkeypatch):
+        """Without a recorded total, past-season queries keep the legacy behaviour."""
+        q._save_cache(
+            q._cache_path("arena", "50", 1),
+            [{"battle_tag": "Cached#1", "position": 1}],
+        )
+        mock_refresh = AsyncMock()
+        mock_fetch = AsyncMock()
+        monkeypatch.setattr(q, "_refresh_full_season", mock_refresh)
+        monkeypatch.setattr(q, "_fetch_page_from_api", mock_fetch)
+
+        result = await q._fetch_all_pages("arena", "50", 1, use_cache=True)
+        mock_refresh.assert_not_called()
+        assert len(result) == 1
+        assert result[0]["battle_tag"] == "Cached#1"
 
 
 # ============================================================
@@ -806,6 +893,84 @@ class TestGetCachedSeasonAll:
         result = await q._get_cached_season_all("arena", "55")
         assert result[0]["position"] == 1
         assert result[1]["position"] == 2
+
+
+# ============================================================
+# _ensure_season_complete / _fetch_season_total — async
+# ============================================================
+
+class TestEnsureSeasonComplete:
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        monkeypatch.setattr(q, "DATA_DIR", self.tmpdir)
+        q._mem_cache.clear()
+        yield
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        q._mem_cache.clear()
+
+    @pytest.mark.asyncio
+    async def test_past_season_no_total_backfills(self, monkeypatch):
+        """No recorded total + empty cache → discover total then full refresh."""
+        async def fake_total(mode, sid):
+            return 500
+
+        refreshed = [{"battle_tag": f"P{i}#1", "position": i} for i in range(1, 501)]
+        mock_refresh = AsyncMock(return_value=refreshed)
+        monkeypatch.setattr(q, "_fetch_season_total", fake_total)
+        monkeypatch.setattr(q, "_refresh_full_season", mock_refresh)
+
+        result = await q._ensure_season_complete("undergroundarena", "7")
+        mock_refresh.assert_awaited_once()
+        assert len(result) == 500
+
+    @pytest.mark.asyncio
+    async def test_past_season_complete_returns_cache(self, monkeypatch):
+        """Complete finalized cache → returned as-is, no API calls."""
+        q._save_season_total("undergroundarena", "7", 50)
+        for page in range(1, 3):
+            q._save_cache(
+                q._cache_path("undergroundarena", "7", page),
+                [{"battle_tag": f"P{page * 25 + i}#1", "position": page * 25 + i} for i in range(25)],
+            )
+        mock_refresh = AsyncMock()
+        mock_total = AsyncMock()
+        monkeypatch.setattr(q, "_refresh_full_season", mock_refresh)
+        monkeypatch.setattr(q, "_fetch_season_total", mock_total)
+
+        result = await q._ensure_season_complete("undergroundarena", "7")
+        mock_refresh.assert_not_called()
+        mock_total.assert_not_called()
+        assert len(result) == 50
+
+    @pytest.mark.asyncio
+    async def test_past_season_incomplete_refreshes(self, monkeypatch):
+        """Recorded total larger than cache → full refresh."""
+        q._save_season_total("undergroundarena", "7", 500)
+        q._save_cache(
+            q._cache_path("undergroundarena", "7", 1),
+            [{"battle_tag": "A#1", "position": 1}, {"battle_tag": "B#2", "position": 2}],
+        )
+        refreshed = [{"battle_tag": f"P{i}#1", "position": i} for i in range(1, 501)]
+        mock_refresh = AsyncMock(return_value=refreshed)
+        monkeypatch.setattr(q, "_refresh_full_season", mock_refresh)
+
+        result = await q._ensure_season_complete("undergroundarena", "7")
+        mock_refresh.assert_awaited_once()
+        assert len(result) == 500
+
+    @pytest.mark.asyncio
+    async def test_latest_season_uses_ttl_fetch(self, monkeypatch):
+        """The live season is fetched TTL-aware and never backfilled/frozen."""
+        mock_refresh = AsyncMock()
+        mock_fetch_all = AsyncMock(return_value=[{"battle_tag": "Live#1", "position": 1}])
+        monkeypatch.setattr(q, "_refresh_full_season", mock_refresh)
+        monkeypatch.setattr(q, "_fetch_all_pages", mock_fetch_all)
+
+        await q._ensure_season_complete("undergroundarena", q.SEASON_ALIASES["默认"])
+        mock_refresh.assert_not_called()
+        mock_fetch_all.assert_awaited_once()
 
 
 # ============================================================
@@ -1205,7 +1370,7 @@ class TestQueryCareerStats:
             return []
 
         matcher = AsyncMock()
-        with patch.object(q, "_get_cached_season_all", side_effect=fake_get):
+        with patch.object(q, "_ensure_season_complete", side_effect=fake_get):
             await q.query_career(matcher, "Alice")
 
         reply = matcher.finish.call_args[0][0]
@@ -1221,7 +1386,7 @@ class TestQueryCareerStats:
             return []
 
         matcher = AsyncMock()
-        with patch.object(q, "_get_cached_season_all", side_effect=fake_get):
+        with patch.object(q, "_ensure_season_complete", side_effect=fake_get):
             await q.query_career(matcher, "Bob")
 
         reply = matcher.finish.call_args[0][0]

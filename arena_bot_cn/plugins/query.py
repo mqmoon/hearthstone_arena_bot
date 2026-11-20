@@ -18,9 +18,27 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_TTL = 600  # 10-minutes disk cache TTL for the latest underground arena season
 MAX_CONCURRENT = 20  # max parallel API requests
 MAX_PLAYER_PAGES = 20  # pages to search when looking up a player
+PAGE_SIZE = 25  # players per page in the Blizzard API
 
 _mem_cache: dict[tuple, tuple[float, list]] = {}  # (mode, season_id, page) -> (timestamp, players)
 _mem_cache_lock = threading.Lock()
+
+# Bounds concurrent Blizzard API requests across every season that is being
+# backfilled at once (e.g. a career query warming up all 18 seasons). One
+# semaphore per event loop, since asyncio.Semaphore binds to the loop that
+# first uses it (tests run each case on a fresh loop).
+_api_semaphores: dict[object, asyncio.Semaphore] = {}
+_api_semaphores_lock = threading.Lock()
+
+
+def _get_api_semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    with _api_semaphores_lock:
+        sem = _api_semaphores.get(loop)
+        if sem is None:
+            sem = asyncio.Semaphore(MAX_CONCURRENT)
+            _api_semaphores[loop] = sem
+        return sem
 
 
 def _resolve_rank_player_input(token: str, qq: str) -> tuple[list[str], bool]:
@@ -203,6 +221,31 @@ def _path_to_cache_key(path: Path) -> tuple | None:
         return None
 
 
+def _season_total_path(mode: str, season_id: str) -> Path:
+    return _cache_path(mode, season_id, 1).parent / "_total.json"
+
+
+def _load_season_total(mode: str, season_id: str) -> int | None:
+    """Read the API-reported total player count for a season, if recorded."""
+    path = _season_total_path(mode, season_id)
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        total = data.get("total")
+        return total if isinstance(total, int) and total > 0 else None
+    except Exception:
+        return None
+
+
+def _save_season_total(mode: str, season_id: str, total: int):
+    path = _season_total_path(mode, season_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"total": total}, f, ensure_ascii=False, indent=2)
+
+
 def _find_player_in_page(players: list, player_name: str) -> dict | None:
     """Search for a player by exact name match first, then substring match."""
     name_lower = player_name.lower()
@@ -353,22 +396,68 @@ def parse_args(user_input: str, is_old: bool = False):
     return season_id, limit, season_name, player_names
 
 
-async def _fetch_page_from_api(client: httpx.AsyncClient, mode: str, season_id: str, page: int) -> list:
+async def _fetch_page_raw(client: httpx.AsyncClient, mode: str, season_id: str, page: int) -> dict:
     api_url = (
         f"https://webapi.blizzard.cn/hs-rank-api-server/api/game/ranks"
-        f"?page={page}&page_size=25&mode_name={mode}&season_id={season_id}"
+        f"?page={page}&page_size={PAGE_SIZE}&mode_name={mode}&season_id={season_id}"
     )
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Referer": "https://hs.blizzard.cn/",
     }
     response = await client.get(api_url, headers=headers, timeout=10.0)
-    data = response.json()
-    players_data = data.get("data") or {}
-    return players_data.get("list", [])
+    return response.json().get("data") or {}
+
+
+async def _fetch_page_from_api(client: httpx.AsyncClient, mode: str, season_id: str, page: int) -> list:
+    return (await _fetch_page_raw(client, mode, season_id, page)).get("list", [])
+
+
+async def _refresh_full_season(mode: str, season_id: str) -> list[dict]:
+    """Fetch every page of a season, overwriting the disk cache.
+
+    A past season's data is immutable, but a cache captured while the season was still
+    live can be incomplete (e.g. only a handful of players on page 1). Once we know the
+    season's true total, we re-fetch all pages so the cache reflects the final leaderboard.
+    Returns all players in rank order.
+    """
+    async def _fetch_one(page: int) -> tuple[int, list, int]:
+        async with _get_api_semaphore():
+            async with httpx.AsyncClient() as client:
+                data = await _fetch_page_raw(client, mode, season_id, page)
+        return page, data.get("list", []), data.get("total", 0)
+
+    results = await asyncio.gather(*[_fetch_one(p) for p in range(1, MAX_PLAYER_PAGES + 1)])
+
+    total = 0
+    by_page: dict[int, list] = {}
+    for page, players, t in results:
+        if t:
+            total = t
+        by_page[page] = players
+        if players:
+            await asyncio.to_thread(_save_cache, _cache_path(mode, season_id, page), players)
+
+    if total:
+        await asyncio.to_thread(_save_season_total, mode, season_id, total)
+
+    all_players: list[dict] = []
+    for page in range(1, MAX_PLAYER_PAGES + 1):
+        all_players.extend(by_page.get(page, []))
+    return all_players
 
 
 async def _fetch_all_pages(mode: str, season_id: str, pages_needed: int, use_cache: bool, ttl: int | None = None) -> list:
+    # Finalized (non-TTL) seasons are immutable. If we recorded the API's total player
+    # count, verify the cache is complete and re-fetch it in full when it is not.
+    if use_cache and ttl is None:
+        total = _load_season_total(mode, season_id)
+        if total is not None:
+            cached_all = await _get_cached_season_all(mode, season_id)
+            if len(cached_all) < total:
+                return await _refresh_full_season(mode, season_id)
+            return cached_all
+
     all_players: list[dict] = []
     uncached_pages: list[int] = []
 
@@ -384,10 +473,8 @@ async def _fetch_all_pages(mode: str, season_id: str, pages_needed: int, use_cac
             uncached_pages.append(page)
 
     if uncached_pages:
-        semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-
         async def _fetch_one(page: int):
-            async with semaphore:
+            async with _get_api_semaphore():
                 async with httpx.AsyncClient() as client:
                     players = await _fetch_page_from_api(client, mode, season_id, page)
                 if players and use_cache:
@@ -424,6 +511,38 @@ async def _get_cached_season_all(mode: str, season_id: str) -> list[dict]:
         if players:
             all_players.extend(players)
     return all_players
+
+
+async def _fetch_season_total(mode: str, season_id: str) -> int | None:
+    """Discover a season's total player count from the API (one lightweight request)."""
+    try:
+        async with httpx.AsyncClient() as client:
+            data = await _fetch_page_raw(client, mode, season_id, 1)
+        total = data.get("total")
+        return total if isinstance(total, int) and total > 0 else None
+    except Exception:
+        return None
+
+
+async def _ensure_season_complete(mode: str, season_id: str) -> list[dict]:
+    """Return a season's full leaderboard, backfilling from the API if missing/incomplete.
+
+    The latest (still-live) season is fetched TTL-aware and never freezes a total; past
+    (finalized) seasons discover their true total and re-fetch in full when the cache is
+    short, so a clean deployment self-heals on first use.
+    """
+    ttl = _resolve_cache_ttl(mode, season_id)
+    if ttl is not None:
+        # Live season — fetch current pages; don't freeze a total that is still growing.
+        return await _fetch_all_pages(mode, season_id, MAX_PLAYER_PAGES, use_cache=True, ttl=ttl)
+
+    total = _load_season_total(mode, season_id)
+    cached = await _get_cached_season_all(mode, season_id)
+    if total is None:
+        total = await _fetch_season_total(mode, season_id)
+    if total is not None and len(cached) < total:
+        return await _refresh_full_season(mode, season_id)
+    return cached
 
 
 def _rank_prefix(position: int) -> str:
@@ -481,12 +600,19 @@ def _career_stats_lines(records: list[dict]) -> list[str]:
 
 
 async def query_career(matcher, player_id: str):
-    # 并发获取所有赛季数据：旧版 49-56 + 新版 1-10
-    old_tasks = [_get_cached_season_all("arena", sid) for sid in ALL_OLD_SEASONS]
-    new_tasks = [_get_cached_season_all("undergroundarena", sid) for sid in ALL_NEW_SEASONS]
+    # 并发获取所有赛季数据：旧版 49-56 + 新版 1-10。
+    # 用 _ensure_season_complete 补齐缺失/残缺的赛季，空环境首查即可自愈。
+    old_tasks = [_ensure_season_complete("arena", sid) for sid in ALL_OLD_SEASONS]
+    new_tasks = [_ensure_season_complete("undergroundarena", sid) for sid in ALL_NEW_SEASONS]
 
-    old_results = await asyncio.gather(*old_tasks)
-    new_results = await asyncio.gather(*new_tasks)
+    try:
+        old_results = await asyncio.gather(*old_tasks)
+        new_results = await asyncio.gather(*new_tasks)
+    except httpx.TimeoutException:
+        await matcher.finish("⏳ 请求官方接口超时，请稍后再试。")
+    except Exception as e:
+        logger.error(f"生涯查询报错: {e}")
+        await matcher.finish("❌ 查询发生未知错误，请联系管理员。")
 
     records: list[dict] = []
 
